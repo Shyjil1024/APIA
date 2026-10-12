@@ -27,10 +27,20 @@ own test command (e.g. ``python -m pytest``).
     # assert: no network/LLM calls anywhere in this module -- the only
     # subprocess spawned is the adapter's local test_command (pytest).
 
+C++ SUPPORT (Phase-2): the harness is stack-agnostic. It selects a result
+parser via the adapter's declared ``result_format`` (pytest | ctest | gtest |
+msbuild; pytest is the unchanged default). For C++ it also runs a BUILD phase
+(cmake configure+build) BEFORE tests so a project with no tests still has a
+regression signal, and it still only ever spawns the adapter's own LOCAL
+build/test command. A ``--dry-run`` mode resolves and prints the commands that
+WOULD run without spawning any subprocess or writing any file, and ``--doctor``
+runs the shared offline toolchain preflight.
+
 Usage:
     python3 .apia/scripts/verify.py <repo_path> [--adapter PATH] [--json]
                                     [--new-tests GLOB_OR_PATH ...]
-                                    [--baseline-only]
+                                    [--baseline-only] [--build-only]
+                                    [--dry-run] [--doctor]
 
 Exit code is 0 only when every executed phase passed.
 """
@@ -43,8 +53,23 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+
+# ingest.py ships the shared, reusable offline toolchain preflight (doctor() /
+# format_doctor_report()). Import it so --doctor reuses the SAME preflight
+# instead of duplicating it. The scripts dir is already this file's directory,
+# so make sure it is importable regardless of the caller's cwd (mirrors how the
+# tests put SCRIPTS_DIR on sys.path). This import is a LOCAL stdlib-only module;
+# it performs no network/LLM calls (enforced by test_ingest's guard).
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+try:
+    import ingest  # noqa: E402  (reused for doctor()/format_doctor_report())
+except ImportError:
+    ingest = None
 
 
 # Signal that pytest prints when it collects zero tests (mirrors the adapter's
@@ -110,9 +135,16 @@ def load_adapter(adapter_path):
 def _split_command(command):
     """Split an adapter command string into argv, replacing the interpreter.
 
-    The adapter spells its commands as ``python -m pytest``; we run them with the
-    SAME interpreter that launched this harness (``sys.executable``) so the
-    harness and the tests share one environment (e.g. the project's .venv).
+    The Python adapter spells its commands as ``python -m pytest``; we run them
+    with the SAME interpreter that launched this harness (``sys.executable``) so
+    the harness and the tests share one environment (e.g. the project's .venv).
+
+    This interpreter-rewrite is applied ONLY when the command's argv[0] is
+    ``python``/``python3``. For C++ commands (``ctest``/``cmake``/``msbuild`` or
+    an absolute tool path such as ``/usr/bin/ctest`` or
+    ``C:/.../msbuild.exe``) argv[0] is left UNCHANGED so the real tool runs
+    as-is. The MSBuild/absolute-path handling here is unit-tested against fixture
+    strings; it is never executed in the Linux sandbox.
     """
     parts = shlex.split(command)
     if parts and parts[0] in ("python", "python3"):
@@ -136,6 +168,152 @@ def _parse_pytest_output(stdout, stderr):
     return counts
 
 
+# --- C++ output parsers -----------------------------------------------------
+#
+# Every parser below normalizes its runner's output to the SAME counts dict
+# shape the pytest parser and run_phase/format_human already consume:
+#   {passed, failed, error, skipped, no_tests}
+# (pytest additionally carries xfailed; the C++ runners have no xfail concept so
+# that key is simply absent for them). This keeps run_phase/format_human and the
+# baseline/regression logic completely parser-agnostic.
+
+# CTest summary line, e.g. "100% tests passed, 0 tests failed out of 5".
+_CTEST_SUMMARY_RE = re.compile(
+    r"(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)"
+)
+# CTest "Total Tests: N" (collection / -N listing and the zero-tests signal).
+_CTEST_TOTAL_RE = re.compile(r"Total Tests:\s+(\d+)")
+
+
+def _parse_ctest_output(stdout, stderr):
+    """Parse ``ctest`` stdout into the normalized counts dict.
+
+    Recognizes the summary line ("X% tests passed, Y tests failed out of N"),
+    the "Total Tests: 0" zero-tests signal, and counts per-test "Passed"/
+    "Failed" result lines as a fallback. CTest has no error/skipped distinction
+    from the summary, so failures land in ``failed``.
+    """
+    text = (stdout or "") + "\n" + (stderr or "")
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "no_tests": False}
+
+    summary = _CTEST_SUMMARY_RE.search(text)
+    if summary:
+        failed = int(summary.group(2))
+        total = int(summary.group(3))
+        counts["failed"] = failed
+        counts["passed"] = max(total - failed, 0)
+        counts["no_tests"] = total == 0
+        return counts
+
+    # No summary line (e.g. a collection run or an aborted run): fall back to the
+    # "Total Tests: N" listing and per-test result lines.
+    total_match = _CTEST_TOTAL_RE.search(text)
+    if total_match and int(total_match.group(1)) == 0:
+        counts["no_tests"] = True
+        return counts
+
+    passed = 0
+    failed = 0
+    for line in text.splitlines():
+        # Per-test lines look like "1/5 Test #1: Name .....   Passed  0.00 sec".
+        if re.search(r"\bPassed\b", line) and "Test #" in line:
+            passed += 1
+        elif re.search(r"\*{3}Failed|\bFailed\b", line) and "Test #" in line:
+            failed += 1
+    counts["passed"] = passed
+    counts["failed"] = failed
+    # Zero tests seen anywhere and the explicit signal present => no tests.
+    if passed == 0 and failed == 0:
+        counts["no_tests"] = "Total Tests: 0" in text
+    return counts
+
+
+# GoogleTest console summary lines, e.g.
+#   "[==========] 5 tests from 3 test suites ran. (0 ms total)"
+#   "[  PASSED  ] 5 tests."
+#   "[  FAILED  ] 1 test, listed below:"
+_GTEST_RAN_RE = re.compile(r"\[=+\]\s+(\d+)\s+tests?\s+from\s+.*ran")
+_GTEST_RAN_ALT_RE = re.compile(r"\[=+\]\s+Running\s+(\d+)\s+tests?")
+_GTEST_PASSED_RE = re.compile(r"\[\s*PASSED\s*\]\s+(\d+)\s+tests?")
+_GTEST_FAILED_RE = re.compile(r"\[\s*FAILED\s*\]\s+(\d+)\s+tests?")
+
+
+def _parse_gtest_output(stdout, stderr):
+    """Parse a GoogleTest binary's console output into the normalized counts dict.
+
+    Reads the "[  PASSED  ] N tests", "[  FAILED  ] N tests" and
+    "[==========] N tests ... ran" summary lines. When zero tests ran it sets
+    ``no_tests``.
+    """
+    text = (stdout or "") + "\n" + (stderr or "")
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "no_tests": False}
+
+    ran_match = _GTEST_RAN_RE.search(text) or _GTEST_RAN_ALT_RE.search(text)
+    ran = int(ran_match.group(1)) if ran_match else None
+
+    passed_match = _GTEST_PASSED_RE.search(text)
+    failed_match = _GTEST_FAILED_RE.search(text)
+    counts["passed"] = int(passed_match.group(1)) if passed_match else 0
+    counts["failed"] = int(failed_match.group(1)) if failed_match else 0
+
+    if ran is not None:
+        counts["no_tests"] = ran == 0
+    else:
+        counts["no_tests"] = counts["passed"] == 0 and counts["failed"] == 0
+    return counts
+
+
+# MSBuild / VSTest result summary, e.g. (captured fixture strings only; no MSVC
+# toolchain exists in this sandbox so this path is unit-tested, never executed):
+#   "Passed!  - Failed:     0, Passed:     5, Skipped:     0, Total:     5"
+#   "Total tests: 5     Passed: 5     Failed: 0"
+_MSBUILD_PASSED_RE = re.compile(r"Passed:\s+(\d+)")
+_MSBUILD_FAILED_RE = re.compile(r"Failed:\s+(\d+)")
+_MSBUILD_SKIPPED_RE = re.compile(r"Skipped:\s+(\d+)")
+_MSBUILD_TOTAL_RE = re.compile(r"Total(?:\s+tests)?:\s+(\d+)")
+# A hard MSBuild compile error (e.g. "error C2065", "Build FAILED.").
+_MSBUILD_BUILD_FAILED_RE = re.compile(r"Build FAILED", re.IGNORECASE)
+
+
+def _parse_msbuild_output(stdout, stderr):
+    """Parse MSBuild/VSTest console output into the normalized counts dict.
+
+    VSTest prints a "Passed: N, Failed: N, Skipped: N, Total: N" summary. This is
+    proven by captured FIXTURE strings in the unit tests; it is never executed in
+    this Linux sandbox (no MSVC/MSBuild/VSTest toolchain).
+    """
+    text = (stdout or "") + "\n" + (stderr or "")
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "no_tests": False}
+
+    passed_match = _MSBUILD_PASSED_RE.search(text)
+    failed_match = _MSBUILD_FAILED_RE.search(text)
+    skipped_match = _MSBUILD_SKIPPED_RE.search(text)
+    total_match = _MSBUILD_TOTAL_RE.search(text)
+
+    counts["passed"] = int(passed_match.group(1)) if passed_match else 0
+    counts["failed"] = int(failed_match.group(1)) if failed_match else 0
+    counts["skipped"] = int(skipped_match.group(1)) if skipped_match else 0
+    if _MSBUILD_BUILD_FAILED_RE.search(text):
+        counts["error"] = counts["error"] or 1
+    if total_match is not None:
+        counts["no_tests"] = int(total_match.group(1)) == 0
+    else:
+        counts["no_tests"] = (
+            counts["passed"] == 0 and counts["failed"] == 0 and counts["skipped"] == 0
+        )
+    return counts
+
+
+# result_format -> parser dispatch. pytest is the DEFAULT so the Python path is
+# byte-for-byte unchanged for every existing test.
+_RESULT_PARSERS = {
+    "pytest": _parse_pytest_output,
+    "ctest": _parse_ctest_output,
+    "gtest": _parse_gtest_output,
+    "msbuild": _parse_msbuild_output,
+}
+
+
 def _run(argv, cwd):
     """Run a command locally and capture output. Pure local subprocess.
 
@@ -152,13 +330,112 @@ def _run(argv, cwd):
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def run_phase(name, command, repo_path, extra_args=None):
-    """Run a single test phase and return a structured result dict."""
+def resolve_result_format(adapter):
+    """Return the result_format for this adapter (pytest | ctest | gtest | msbuild).
+
+    Resolution order:
+      1. the adapter's top-level ``result_format`` key, if present;
+      2. the ``result_format`` of the adapter's first/default test_framework
+         entry (``frameworks[0]`` keyed into ``test_frameworks``);
+      3. ``pytest`` as the default (so the Python path is unchanged).
+    """
+    fmt = adapter.get("result_format")
+    if fmt:
+        return fmt
+    frameworks = adapter.get("frameworks") or []
+    tf = adapter.get("test_frameworks") or {}
+    if frameworks and isinstance(tf, dict):
+        entry = tf.get(frameworks[0]) or {}
+        if isinstance(entry, dict) and entry.get("result_format"):
+            return entry["result_format"]
+    return "pytest"
+
+
+def _parser_for(result_format):
+    """Return the parser callable for a result_format, defaulting to pytest."""
+    return _RESULT_PARSERS.get(result_format, _parse_pytest_output)
+
+
+def resolve_build_command(adapter):
+    """Return the adapter's build command, or None when it has none (pytest).
+
+    Prefers the top-level ``build_command``; falls back to the selected build
+    system's ``configure_command`` + ``build_command`` joined with ``&&``.
+    """
+    cmd = adapter.get("build_command")
+    if cmd:
+        return cmd
+    build_systems = adapter.get("build_systems") or {}
+    if isinstance(build_systems, dict) and build_systems:
+        # Prefer cmake when present (portable default), else the first entry.
+        key = "cmake" if "cmake" in build_systems else sorted(build_systems)[0]
+        entry = build_systems.get(key) or {}
+        parts = [entry.get("configure_command"), entry.get("build_command")]
+        parts = [p for p in parts if p]
+        if parts:
+            return " && ".join(parts)
+    return None
+
+
+def _config_path_for(repo_path):
+    """Return the .apia/config.yml path shipped with this package (not the repo).
+
+    The optional cpp overrides live in the APIA package config, consistent with
+    how ingest reads confidence_threshold. Falls back to None when unreadable.
+    """
+    apia_dir = os.path.dirname(_SCRIPTS_DIR)
+    candidate = os.path.join(apia_dir, "config.yml")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def load_cpp_overrides(repo_path=None):
+    """Return the optional ``cpp:`` overrides block from .apia/config.yml, or {}.
+
+    This is a FALLBACK: present only when a project pins non-default values
+    (build_dir, cmake_path, build_config, test_command_override, build_system).
+    Never required for the default CMake + CTest path.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    cfg = _config_path_for(repo_path)
+    if not cfg:
+        return {}
+    try:
+        with open(cfg, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except (OSError, ValueError):
+        return {}
+    block = data.get("cpp")
+    return block if isinstance(block, dict) else {}
+
+
+def _apply_cpp_overrides(adapter, overrides):
+    """Return (test_command, build_command) after applying any cpp overrides.
+
+    An explicit ``test_command_override`` wins; otherwise the adapter defaults
+    stand. Overrides are consulted only for the cpp adapter and never required.
+    """
+    test_command = adapter.get("test_command")
+    build_command = resolve_build_command(adapter)
+    if adapter.get("name") == "cpp" and overrides:
+        if overrides.get("test_command_override"):
+            test_command = overrides["test_command_override"]
+    return test_command, build_command
+
+
+def run_phase(name, command, repo_path, extra_args=None, result_format="pytest"):
+    """Run a single test phase and return a structured result dict.
+
+    ``result_format`` selects the output parser (pytest default). The returned
+    dict shape is identical across all formats so callers stay parser-agnostic.
+    """
     argv = _split_command(command)
     if extra_args:
         argv = argv + list(extra_args)
     returncode, stdout, stderr = _run(argv, cwd=repo_path)
-    counts = _parse_pytest_output(stdout, stderr)
+    counts = _parser_for(result_format)(stdout, stderr)
     # A phase "passed" when pytest exited 0 with no failures/errors AND it is not
     # a zero-tests run (an empty run is not evidence of anything).
     passed = (
@@ -175,6 +452,49 @@ def run_phase(name, command, repo_path, extra_args=None):
         "counts": counts,
         "stdout_tail": _tail(stdout),
         "stderr_tail": _tail(stderr),
+    }
+
+
+def run_build_phase(command, repo_path):
+    """Run the adapter's build_command and report pass/fail from the exit code.
+
+    This is the BUILD-ONLY validation phase ("does it still compile?"). It runs
+    NO tests; the phase passes iff the build process exits 0. For a C++ project
+    with no tests this is the only regression signal available, so it must be
+    able to stand alone. The result dict matches run_phase's shape (a zeroed
+    counts dict) so it flows through summary['phases'] / format_human / ok.
+
+    The command may chain configure+build with ``&&`` (as the cpp adapter's
+    default build_command does); it is run via a shell-free split per subcommand.
+    """
+    results = []
+    returncode = 0
+    stdout_all = []
+    stderr_all = []
+    # Support "cmake -S . -B build && cmake --build build" by running each
+    # &&-joined subcommand in order and stopping on the first failure. No shell
+    # is invoked (still a direct, local subprocess per subcommand).
+    for sub in [c.strip() for c in command.split("&&")]:
+        if not sub:
+            continue
+        argv = _split_command(sub)
+        rc, out, err = _run(argv, cwd=repo_path)
+        stdout_all.append(out or "")
+        stderr_all.append(err or "")
+        results.append(sub)
+        returncode = rc
+        if rc != 0:
+            break
+    passed = returncode == 0
+    return {
+        "phase": "build",
+        "command": command,
+        "returncode": returncode,
+        "passed": passed,
+        "counts": {"passed": 0, "failed": 0, "error": 0, "skipped": 0,
+                   "no_tests": False},
+        "stdout_tail": _tail("\n".join(stdout_all)),
+        "stderr_tail": _tail("\n".join(stderr_all)),
     }
 
 
@@ -329,11 +649,123 @@ def compare_to_baseline(stored, current_counts, current_nodes):
     }
 
 
+def resolve_plan(repo_path, adapter_path=None, new_tests=None,
+                 baseline_only=False, build_only=False, baseline_file=None):
+    """Resolve WHICH commands a verify() run would spawn, without spawning any.
+
+    Returns a dict with the resolved adapter facts and the ordered list of
+    planned (phase, command) pairs. Used by --dry-run / --explain to report the
+    plan + reasoning with ZERO subprocesses and ZERO file writes, and internally
+    by verify() so the plan and the real run agree.
+    """
+    repo_path = os.path.abspath(repo_path)
+    adapter_path = adapter_path or default_adapter_path()
+    adapter = load_adapter(adapter_path)
+    test_command = _test_command(adapter)
+    overrides = load_cpp_overrides(repo_path) if adapter.get("name") == "cpp" else {}
+    test_command, build_command = _apply_cpp_overrides(adapter, overrides) \
+        if overrides else (test_command, resolve_build_command(adapter))
+    result_format = resolve_result_format(adapter)
+    is_cpp = adapter.get("name") == "cpp"
+    baseline_file = baseline_file or os.path.join(repo_path, DEFAULT_BASELINE_FILE)
+
+    planned = []
+    # BUILD phase runs first for C++ (compile-before-test, so the test runner has
+    # fresh binaries) or whenever --build-only is requested and the adapter has a
+    # build command. It runs in baseline-only mode too (the baseline tests need
+    # the build dir to exist first).
+    run_build = bool(build_command) and (build_only or is_cpp)
+    if run_build:
+        planned.append(("build", build_command))
+    if not build_only:
+        planned.append(("baseline", test_command))
+        if not baseline_only:
+            planned.append(("regression", test_command))
+            if new_tests:
+                planned.append(("new", test_command))
+
+    reasoning = [
+        "adapter: {} ({})".format(adapter.get("name", "unknown"), adapter_path),
+        "result_format: {}".format(result_format),
+        "test_command: {}".format(test_command),
+        "build_command: {}".format(build_command if build_command else "(none)"),
+        "build_system(s): {}".format(
+            ", ".join(sorted((adapter.get("build_systems") or {}).keys())) or "(n/a)"),
+        "test_framework(s): {}".format(
+            ", ".join(adapter.get("frameworks") or []) or "(n/a)"),
+    ]
+    if overrides:
+        reasoning.append("cpp overrides applied: {}".format(sorted(overrides.keys())))
+    return {
+        "repo_path": repo_path,
+        "adapter": adapter,
+        "adapter_name": adapter.get("name", "unknown"),
+        "adapter_path": adapter_path,
+        "test_command": test_command,
+        "build_command": build_command,
+        "result_format": result_format,
+        "is_cpp": is_cpp,
+        "run_build": run_build,
+        "overrides": overrides,
+        "baseline_file": baseline_file,
+        "planned_commands": [{"phase": ph, "command": cmd} for ph, cmd in planned],
+        "reasoning": reasoning,
+    }
+
+
+def preflight_missing_tool(plan):
+    """Return a clear actionable message when a required tool is missing, else None.
+
+    Looks at the resolved build/test commands, finds argv[0] of each, and uses
+    shutil.which to check reachability BEFORE spawning anything. This turns a
+    confusing subprocess OSError (e.g. ctest absent, or MSBuild requested with no
+    Developer shell) into an upfront, legible message. The pytest path uses
+    sys.executable, which always resolves, so this never affects Python runs.
+    """
+    checked = set()
+    cmds = [plan["build_command"], plan["test_command"]]
+    for cmd in cmds:
+        if not cmd:
+            continue
+        for sub in cmd.split("&&"):
+            parts = _split_command(sub)
+            if not parts:
+                continue
+            exe = parts[0]
+            if exe == sys.executable or exe in checked:
+                continue
+            checked.add(exe)
+            # Absolute path: check existence directly; else PATH lookup.
+            found = (os.path.isfile(exe) if os.path.isabs(exe)
+                     else shutil.which(exe) is not None)
+            if not found:
+                if os.path.basename(exe).lower() in ("msbuild", "msbuild.exe",
+                                                      "cl", "cl.exe",
+                                                      "vstest.console.exe"):
+                    return (
+                        "required tool '{}' is not reachable. On Windows it is "
+                        "available only inside the 'VS 2022 Developer Command "
+                        "Prompt' (which sets up MSBuild/cl/VSTest). Launch APIA "
+                        "from that Developer shell, or run --doctor to preflight."
+                        .format(exe)
+                    )
+                return (
+                    "required tool '{}' is not reachable (not on PATH / not an "
+                    "existing path). Install it or run --doctor to preflight "
+                    "before this {} run.".format(exe, plan["adapter_name"])
+                )
+    return None
+
+
 def verify(repo_path, adapter_path=None, new_tests=None, baseline_only=False,
-           baseline_file=None):
+           baseline_file=None, build_only=False, dry_run=False):
     """Run the verification phases and return a summary dict.
 
     Phases:
+      - build:      (C++ only, or any --build-only run) the adapter build_command
+                    (cmake configure+build); pass/fail from the exit code, no
+                    tests. Runs FIRST so a no-test project still has a regression
+                    signal. Skipped for the pytest path (no build_command).
       - baseline:   the project's EXISTING tests, with the ``--new-tests`` target
                     EXCLUDED so "existing suite" is genuinely the pre-change set.
       - regression: the existing suite again; when a stored baseline captured by a
@@ -344,25 +776,90 @@ def verify(repo_path, adapter_path=None, new_tests=None, baseline_only=False,
 
     When ``baseline_only`` is True, only the baseline phase runs and its result
     (counts + collected node set) is persisted to ``baseline_file`` so it can be
-    consumed by a later post-change run. Capturing on the pre-change tree, then
-    running again after the change, is what makes the regression guarantee
-    self-contained.
+    consumed by a later post-change run.
+
+    When ``build_only`` is True, ONLY the build phase runs (compile-pass/fail is
+    the regression signal). When ``dry_run`` is True, NO subprocess is spawned
+    and NO file is written: the resolved plan is returned with dry_run=True.
     """
-    repo_path = os.path.abspath(repo_path)
-    adapter_path = adapter_path or default_adapter_path()
-    adapter = load_adapter(adapter_path)
-    test_command = _test_command(adapter)
-    baseline_file = baseline_file or os.path.join(repo_path, DEFAULT_BASELINE_FILE)
+    plan = resolve_plan(repo_path, adapter_path=adapter_path, new_tests=new_tests,
+                        baseline_only=baseline_only, build_only=build_only,
+                        baseline_file=baseline_file)
+    repo_path = plan["repo_path"]
+    adapter = plan["adapter"]
+    test_command = plan["test_command"]
+    build_command = plan["build_command"]
+    result_format = plan["result_format"]
+    baseline_file = plan["baseline_file"]
+
+    if dry_run:
+        # Explain-the-plan: resolve and report, writing nothing, spawning nothing.
+        return {
+            "repo": os.path.basename(repo_path.rstrip(os.sep)),
+            "repo_path": repo_path,
+            "adapter": plan["adapter_name"],
+            "adapter_path": plan["adapter_path"],
+            "test_command": test_command,
+            "build_command": build_command,
+            "result_format": result_format,
+            "dry_run": True,
+            "baseline_only": bool(baseline_only),
+            "build_only": bool(build_only),
+            "baseline_file": baseline_file,
+            "had_no_tests_before": None,
+            "planned_commands": plan["planned_commands"],
+            "reasoning": plan["reasoning"],
+            "phases": [],
+            "ok": True,
+        }
 
     # Exclude the new-test target(s) from the existing-suite phases so the
     # baseline/regression collection is the pre-change suite, not "everything on
     # disk including the committed new test". pytest's --deselect does this per
-    # node/path.
+    # node/path. These flags are pytest-specific; other runners (ctest/gtest/
+    # msbuild) select tests differently, so we only apply them for pytest and
+    # otherwise rely on the runner running its full registered suite.
     existing_suite_args = []
-    for t in (new_tests or []):
-        existing_suite_args.extend(["--ignore=" + t, "--deselect", t])
+    if result_format == "pytest":
+        for t in (new_tests or []):
+            existing_suite_args.extend(["--ignore=" + t, "--deselect", t])
 
     phases = []
+    regression_delta = None
+
+    # (0) BUILD: compile-before-test / build-only regression signal.
+    if plan["run_build"]:
+        build = run_build_phase(build_command, repo_path)
+        phases.append(build)
+        # If the build failed, running tests against stale/absent binaries is
+        # pointless; a build-only run stops here by definition.
+        build_failed = not build["passed"]
+    else:
+        build_failed = False
+
+    if build_only:
+        # Build-only: the compile result IS the verification outcome.
+        all_passed = all(p["passed"] for p in phases)
+        summary = {
+            "repo": os.path.basename(repo_path.rstrip(os.sep)),
+            "repo_path": repo_path,
+            "adapter": plan["adapter_name"],
+            "adapter_path": plan["adapter_path"],
+            "test_command": test_command,
+            "build_command": build_command,
+            "result_format": result_format,
+            "build_only": True,
+            "had_no_tests_before": None,
+            "baseline_only": False,
+            "baseline_file": baseline_file,
+            "baseline_compared": False,
+            "regression_delta": None,
+            "existing_suite_nodes": [],
+            "phases": phases,
+            "ok": all_passed,
+        }
+        return summary
+
     no_tests = detect_no_tests(adapter, repo_path)
     # Node set of the EXISTING suite (new-test target excluded) -- the oracle for
     # the persisted baseline and for regression-by-removal detection.
@@ -373,23 +870,24 @@ def verify(repo_path, adapter_path=None, new_tests=None, baseline_only=False,
 
     # (a) BASELINE: the project's existing test suite (new tests excluded).
     baseline = run_phase("baseline", test_command, repo_path,
-                         extra_args=existing_suite_args or None)
+                         extra_args=existing_suite_args or None,
+                         result_format=result_format)
     phases.append(baseline)
 
-    regression_delta = None
     if baseline_only:
         # Persist the pre-change baseline for a later post-change comparison.
         save_baseline(baseline_file, {
             "repo": os.path.basename(repo_path.rstrip(os.sep)),
             "test_command": test_command,
-            "phases": phases,
+            "phases": [baseline],
         }, existing_nodes)
     else:
         # (b) REGRESSION: re-run the existing suite. If a baseline was captured
         # before the change, compare against it so the "no regression" claim is a
         # real before/after delta, not a blind repeat of the same disk state.
         regression = run_phase("regression", test_command, repo_path,
-                               extra_args=existing_suite_args or None)
+                               extra_args=existing_suite_args or None,
+                               result_format=result_format)
         stored = load_baseline(baseline_file)
         if stored is not None:
             regression_delta = compare_to_baseline(
@@ -403,16 +901,20 @@ def verify(repo_path, adapter_path=None, new_tests=None, baseline_only=False,
 
         # (c) NEW: run only the newly added tests, when the caller points at them.
         if new_tests:
-            new_result = run_phase("new", test_command, repo_path, extra_args=list(new_tests))
+            new_result = run_phase("new", test_command, repo_path,
+                                   extra_args=list(new_tests),
+                                   result_format=result_format)
             phases.append(new_result)
 
     all_passed = all(p["passed"] for p in phases)
     summary = {
         "repo": os.path.basename(repo_path.rstrip(os.sep)),
         "repo_path": repo_path,
-        "adapter": adapter.get("name", "unknown"),
-        "adapter_path": adapter_path,
+        "adapter": plan["adapter_name"],
+        "adapter_path": plan["adapter_path"],
         "test_command": test_command,
+        "build_command": build_command,
+        "result_format": result_format,
         "had_no_tests_before": no_tests,
         "baseline_only": bool(baseline_only),
         "baseline_file": baseline_file,
@@ -430,15 +932,38 @@ def format_human(summary):
     lines = []
     lines.append("APIA verify :: {} (adapter: {})".format(summary["repo"], summary["adapter"]))
     lines.append("  test command: {}".format(summary["test_command"]))
-    if summary["had_no_tests_before"]:
+    if summary.get("build_command"):
+        lines.append("  build command: {}".format(summary["build_command"]))
+
+    # --dry-run / --explain: report the resolved plan + reasoning, nothing ran.
+    if summary.get("dry_run"):
+        lines.append("  mode: DRY-RUN (no subprocess spawned, no file written)")
+        lines.append("  reasoning:")
+        for r in summary.get("reasoning", []):
+            lines.append("    - {}".format(r))
+        lines.append("  planned commands (in order):")
+        for pc in summary.get("planned_commands", []):
+            lines.append("    [{:<10}] {}".format(pc["phase"], pc["command"]))
+        lines.append("  => DRY-RUN OK (plan resolved; run without --dry-run to execute)")
+        return "\n".join(lines)
+
+    if summary.get("had_no_tests_before"):
         lines.append("  note: no tests detected before this run "
                      "(legacy / characterization path).")
+    if summary.get("build_only"):
+        lines.append("  note: build-only run; compile result is the regression "
+                     "signal (no tests executed).")
     if summary.get("baseline_only"):
         lines.append("  note: baseline-only run; captured pre-change baseline to {}".format(
             summary.get("baseline_file")))
     for p in summary["phases"]:
         c = p["counts"]
         status = "PASS" if p["passed"] else "FAIL"
+        if p["phase"] == "build":
+            detail = "compiled OK" if p["passed"] else "compile FAILED (rc={})".format(
+                p.get("returncode"))
+            lines.append("  [{}] {:<10} {}".format(status, p["phase"], detail))
+            continue
         detail = "{} passed, {} failed, {} error, {} skipped".format(
             c["passed"], c["failed"], c["error"], c["skipped"]
         )
@@ -451,7 +976,7 @@ def format_human(summary):
         lines.append("  baseline delta: passed {:+d} ({} -> {}); removed {} node(s) => {}".format(
             delta["passed_delta"], delta["baseline_passed"], delta["current_passed"],
             len(delta["removed_nodes"]), verdict))
-    elif not summary.get("baseline_only"):
+    elif not summary.get("baseline_only") and not summary.get("build_only"):
         lines.append("  baseline delta: none captured (run --baseline-only on the "
                      "pre-change tree first for a true before/after delta).")
     lines.append("  => {}".format("ALL GREEN" if summary["ok"] else "VERIFICATION FAILED"))
@@ -465,7 +990,12 @@ def main(argv=None):
             "no LLM/network calls)."
         )
     )
-    parser.add_argument("repo_path", help="Path to the repository to verify.")
+    parser.add_argument(
+        "repo_path",
+        nargs="?",
+        default=None,
+        help="Path to the repository to verify (optional for --doctor).",
+    )
     parser.add_argument(
         "--adapter",
         default=None,
@@ -493,14 +1023,65 @@ def main(argv=None):
              "<repo>/.apia-baseline.json).",
     )
     parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Only run the BUILD phase (adapter build_command). Compile pass/fail "
+             "is the sole regression signal -- essential for a C++ project with "
+             "no tests yet.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "--explain",
+        dest="dry_run",
+        action="store_true",
+        help="Resolve and print the build/test commands that WOULD run plus the "
+             "detected build-system/framework reasoning, then exit WITHOUT "
+             "spawning any subprocess or writing any baseline file.",
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run the shared offline toolchain preflight (reachable tools + "
+             "versions + VS Developer-shell / missing-tool warnings) and exit.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit the machine-readable JSON summary (in addition to the human one).",
     )
     args = parser.parse_args(argv)
 
+    # --doctor: shared offline preflight; no repo path required.
+    if args.doctor:
+        if ingest is None:
+            parser.error("doctor preflight unavailable: could not import ingest.py")
+        report = ingest.doctor()
+        print(ingest.format_doctor_report(report), end="")
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        # Exit non-zero when any checked tool is missing so a preflight can gate.
+        return 0 if not report["warnings"] else 1
+
+    if not args.repo_path:
+        parser.error("repo_path is required (except with --doctor).")
     if not os.path.isdir(args.repo_path):
         parser.error("repo_path is not a directory: {}".format(args.repo_path))
+
+    # Up-front missing-tool preflight for the resolved commands (skips dry-run,
+    # which spawns nothing): turn a confusing subprocess error into a clear
+    # actionable message when e.g. ctest/MSBuild are unavailable.
+    if not args.dry_run:
+        try:
+            plan = resolve_plan(
+                args.repo_path, adapter_path=args.adapter, new_tests=args.new_tests,
+                baseline_only=args.baseline_only, build_only=args.build_only,
+                baseline_file=args.baseline_file,
+            )
+        except StubAdapterError as exc:
+            parser.error(str(exc))
+        missing = preflight_missing_tool(plan)
+        if missing:
+            parser.error(missing + " (run 'verify.py --doctor' for details)")
 
     try:
         summary = verify(
@@ -509,6 +1090,8 @@ def main(argv=None):
             new_tests=args.new_tests,
             baseline_only=args.baseline_only,
             baseline_file=args.baseline_file,
+            build_only=args.build_only,
+            dry_run=args.dry_run,
         )
     except StubAdapterError as exc:
         parser.error(str(exc))
