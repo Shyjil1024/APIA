@@ -27,7 +27,15 @@ The agent must:
 - Even greenfield: generate what the user asked for, minimal tokens, best accuracy.
 
 Primary stacks (first-class support priority): **Python, C++, C#, Groovy**. The design is
-language-agnostic; these stacks ship with ready-made adapters first.
+language-agnostic; these stacks ship with ready-made adapters first. **Python and C++ are
+supported today** (C++ via **CMake + MSBuild**, with GoogleTest/Catch2/CTest and
+VSTest); C#/Groovy remain adapter stubs (DEFERRED to Phase 2).
+
+APIA follows a **DETECT-FIRST / ASK-ONLY-ON-GENUINE-DOUBT / ASK-SPECIFICALLY** discipline:
+it infers the build system and test framework from real project evidence and only asks when
+confidence falls below `confidence_threshold` (0.75), and then asks ONE specific, informed
+question (see section 6). It stays **strictly local**: it never auto-pushes, opens PRs/MRs,
+or runs CI/CD/packaging/signing - the user pushes manually.
 
 ### Hard architectural constraints (confirmed with the user)
 
@@ -118,6 +126,12 @@ repo. Token efficiency lives here.
 - **Legacy-aware.** No assumption of docs or tests. Detect stack from manifests
   (`requirements.txt`/`pyproject.toml`, `CMakeLists.txt`/`conanfile`, `*.csproj`/`*.sln`,
   `build.gradle`/Jenkinsfile Groovy) and from file extensions.
+- **Detect-first with persisted facts.** The ingester records the detected build system and
+  test framework (CMake vs MSBuild; GoogleTest/Catch2/CTest for C++) in a `project-facts.md`
+  artifact with a **confidence score** against `confidence_threshold`. Below threshold it emits
+  a **precomposed, specific clarifying question** (what was found, what was inferred, the
+  uncertainty, a best guess) instead of guessing. Confirmed facts persist so they are not
+  re-asked.
 - Runs in a **forked context** (`context: fork`) so the large ingestion reasoning never pollutes the
   main conversation; only the distilled knowledge returns.
 
@@ -152,13 +166,38 @@ GATE: user approves the proposed diff (or requests changes -> loop back).
 - **Legacy / no-tests case:** if no (or inadequate) tests cover the touched code, **generate
   characterization tests** that pin current behavior **before** modifying, so regressions are
   detectable.
+- **Build-only compile check:** for C++ (and any project), the harness can run the adapter's
+  `build_command` first (`verify.py --build-only`) as a fast compile-level regression signal -
+  the only one available when the project has no tests.
 - **New tests:** generate tests/verifications for the new behavior per the change spec. Stack-aware
-  via adapters (pytest; GoogleTest/Catch2/CTest; xUnit/NUnit via `dotnet test`; Spock/JUnit via
-  Gradle for Groovy).
+  via adapters (pytest; GoogleTest/Catch2/CTest, VSTest for C++; xUnit/NUnit via `dotnet test`;
+  Spock/JUnit via Gradle for Groovy). The off-model harness parses each adapter's declared
+  `result_format` (pytest/ctest/gtest/msbuild) into one uniform pass/fail counts shape.
 - Apply the change in a scratch/working state, run existing + new tests, confirm **old behavior still
   passes and new behavior is verified**. Report pass/fail compactly.
 
 GATE: user reviews the test results.
+
+### Cross-stack capabilities (implemented)
+
+Four worth-adding features ship across stacks and are proven on both Python and C++:
+
+1. **Doctor / preflight toolchain check** - `ingest.py --doctor` / `verify.py --doctor` report
+   tool reachability + versions (cmake/ctest/compilers) and clearly warn when a required tool
+   or the VS 2022 Developer Command Prompt is missing, so a run fails with an actionable message
+   instead of a confusing subprocess error.
+2. **Persisted project-facts / detection memory** - detected (and user-confirmed) build system,
+   test framework, confidence, and evidence persist to `.apia/knowledge/project-facts.md`, so
+   facts are not re-asked.
+3. **Dry-run / explain-the-plan** - `verify.py --dry-run` resolves and prints the build/test
+   commands that WOULD run plus the detection reasoning, writing nothing and spawning no
+   build/test subprocess.
+4. **Build-only validation phase** - `verify.py --build-only` compiles without running tests, a
+   fast regression signal (and the only one when a project has no tests).
+
+> **Visual Studio 2022 honors only Tier-0 (`.github/copilot-instructions.md`) + Tier-1 prompt
+> files, NOT Tier-2 skills/agents.** The C++ loop must therefore run fully via the Tier-0 protocol
+> as a single agent (see `docs/PORTABILITY.md`).
 
 ### Stage 5 - APPLY
 
@@ -195,7 +234,7 @@ Any stage can bounce back to CLARIFY if new uncertainty appears.
     knowledge/                       # cached, committed project knowledge base
     config.yml                       # token budget, stack adapters, thresholds
     scripts/                         # off-model preprocessing (indexing, test discovery)
-    adapters/                        # per-stack build/test command maps (py, cpp, csharp, groovy)
+    adapters/                        # per-stack build/test maps (py + cpp complete; csharp/groovy stubs)
   docs/
     ARCHITECTURE.md                  # this document
 ```
@@ -260,11 +299,16 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
 
 ### Phase 2 - Multi-stack hardening + continuous insight (high level)
 
-- Flesh out C++, C#, Groovy adapters (build/test/characterization) to parity with Python.
-- **Continuous risk/vulnerability/quality scanning**: dependency CVE checks, static analysis,
-  complexity/duplication/debt signals, surfaced as prioritized findings - all via Copilot tool-use
-  and off-model scanners, respecting the token budget.
-- Improvement-opportunity suggestions grounded in the knowledge base.
+- **C++ is now implemented** (CMake + MSBuild adapter, GoogleTest characterization template,
+  build-only phase, CTest/GoogleTest result parsing - MSBuild/VSTest unit-tested only). The four
+  cross-stack features (doctor, project-facts memory, dry-run, build-only) ship with it. **DEFERRED
+  within Phase 2:** C#/Groovy adapters to parity, and concrete **MCP data sources**.
+- **DEFERRED - Continuous risk/vulnerability/quality scanning**: dependency CVE checks, static
+  analysis, complexity/duplication/debt signals, surfaced as prioritized findings - all via Copilot
+  tool-use and off-model scanners, respecting the token budget.
+- **DEFERRED** - Improvement-opportunity suggestions grounded in the knowledge base.
+- **DEFERRED** - auto-push / PR / MR / CI integration and VS Code marketplace extension packaging
+  (APIA stays strictly local; the user pushes manually).
 
 ### Phase 3 - Validation gates (high level)
 

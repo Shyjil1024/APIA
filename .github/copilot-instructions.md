@@ -38,6 +38,13 @@ If your confidence in understanding the request is below the `confidence_thresho
 in `.apia/config.yml`, **ask numbered clarifying questions - never guess**. Ground every
 claim in the knowledge base and real file reads; fetch external facts via MCP/tool-use.
 
+**DETECT FIRST, ASK ONLY ON GENUINE DOUBT, ASK SPECIFICALLY.** Before asking anything,
+infer the build system and test framework from real project evidence (manifests,
+extensions, detected frameworks). If confidence `>= confidence_threshold`, **proceed and
+STATE the reasoning**. Only below it ask **ONE specific, informed** question that shows
+what was found, what was inferred, the uncertainty, and a best guess. Persist detected or
+confirmed facts to `.apia/knowledge/` (project-facts) so you never re-ask.
+
 ## Token efficiency
 
 - Use the cached `.apia/knowledge/` base; **never dump the whole repo**.
@@ -48,8 +55,25 @@ claim in the knowledge base and real file reads; fetch external facts via MCP/to
 
 ## Stack priority
 
-First-class stacks, in order: **Python, C++, C#, Groovy**. Python is fully supported
-first; the others have adapter stubs. Detect the stack from manifests/extensions.
+First-class stacks, in order: **Python, C++, C#, Groovy**. **Python and C++ are supported**
+(C++ via CMake + MSBuild, with GoogleTest/Catch2/CTest/VSTest); C#/Groovy have adapter stubs.
+Detect the stack from manifests/extensions.
+
+## Cross-stack helpers
+
+- **doctor preflight:** `ingest.py --doctor` / `verify.py --doctor` previews toolchain
+  readiness (cmake/ctest/compilers; warns when the VS Developer shell is missing).
+- **project-facts memory:** detected build system + test framework + confidence persist to
+  `.apia/knowledge/` so facts are not re-asked.
+- **build-only phase:** `verify.py --build-only` compiles without running tests (the only
+  regression signal when a C++ project has no tests).
+- **dry-run:** `verify.py --dry-run` prints the planned build/test commands + reasoning and
+  writes nothing. See prompts/skills for detail.
+
+## Local only
+
+APIA stays **strictly local**: it never auto-pushes, opens PRs/MRs, or runs
+CI/CD/packaging/signing. The user pushes manually.
 
 ## Where the detail lives (load on demand)
 

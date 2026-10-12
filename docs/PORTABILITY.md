@@ -38,6 +38,15 @@ guarantee.
 - **JetBrains** supports **only** `.github/copilot-instructions.md` and prompt
   files. It does **not** honor `.github/instructions/*.instructions.md`, Agent
   Skills, or custom agents. The Tier-0 file must therefore be self-sufficient.
+- **Visual Studio 2022** honors **only Tier-0** (`.github/copilot-instructions.md`)
+  **and Tier-1** (prompt files). It does **not** honor Tier-2 Agent Skills or custom
+  agents (see the matrix: both show `-` for Visual Studio). This is the host for the
+  real C++ project, so the **entire ingest -> clarify -> modify -> test -> apply loop
+  must work via the Tier-0 protocol run as a single agent** following the written
+  prompt files - no forked-context skills, no handoff buttons. The Tier-0 instructions
+  therefore carry the full protocol (loop, gates, detect-first/clarify discipline, C++
+  support, the doctor/project-facts/dry-run/build-only helpers, and the local-only
+  rule) so the C++ loop is self-sufficient on VS 2022.
 - **VS Code Agent Host** is the Phase-1 primary host (richest surface) and
   **deprecates prompt files** in favor of Agent Skills.
 - **Agent Skills `name` must equal the parent directory name** and contain only

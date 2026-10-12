@@ -12,4 +12,7 @@ Run the APIA **APPLY** stage.
 3. Prepare the commit (and/or PR) with a concise message. **Do not auto-push.**
 4. **STOP at the gate** for the user to confirm the final apply/commit.
 
+**Local only:** APIA never auto-pushes, opens PRs/MRs, or runs CI/CD/packaging/signing.
+The user pushes manually.
+
 Do not call any external LLM.
