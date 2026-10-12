@@ -22,6 +22,74 @@ APIA up on your machine.
 
 ---
 
+## Quick install (one command)
+
+The fastest way to add APIA to your own repository is the one-line installer.
+Run it **from your project root**. It fetches the APIA repo into a temporary
+directory, copies only the `.github/` and `.apia/` directories into the current
+directory, and cleans up the temp copy. Nothing in your project is deleted;
+files are only added or merged.
+
+**Windows PowerShell:**
+
+```powershell
+iwr https://raw.githubusercontent.com/Shyjil1024/APIA/main/install.ps1 | iex
+```
+
+**macOS / Linux (bash):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Shyjil1024/APIA/main/install.sh | bash
+```
+
+### What it does
+
+- Shallow-clones `https://github.com/Shyjil1024/APIA` into a unique temp dir
+  (outside your project). If `git` is not installed, it falls back to
+  downloading the repo zip (via `Invoke-WebRequest` / `curl`).
+- Copies **only** `.github/` (the Copilot-facing artifacts) and `.apia/` (the
+  APIA engine, config, scripts, adapters) into `./`. `docs/`, `samples/`, and
+  APIA's own `README`/`.gitignore` are skipped by default.
+- Always removes the temp clone, even on failure.
+
+### Optional flags
+
+Append these to also copy the extras (default copies neither):
+
+- `--with-samples` — also copy the `samples/` directory.
+- `--with-docs` — also copy the `docs/` directory.
+
+```sh
+# bash: pass flags after `-s --`
+curl -fsSL https://raw.githubusercontent.com/Shyjil1024/APIA/main/install.sh | bash -s -- --with-samples --with-docs
+```
+
+```powershell
+# PowerShell: download then invoke with switches
+$s = iwr https://raw.githubusercontent.com/Shyjil1024/APIA/main/install.ps1
+& ([scriptblock]::Create($s.Content)) -WithSamples -WithDocs
+```
+
+### Safety when `.github/copilot-instructions.md` already exists
+
+If your repo already has a `.github/copilot-instructions.md`, the installer
+will **not** overwrite it. It copies APIA's `prompts/`, `skills/`, and
+`agents/` into `.github/`, writes APIA's protocol file alongside yours as
+`.github/copilot-instructions.apia.md`, and prints a warning. Review that file
+and merge the APIA protocol into your own `copilot-instructions.md` to activate
+the loop.
+
+### After installing
+
+1. Install the off-model script dependencies: `pip install pytest pyyaml`
+2. Reload VS Code (**Developer: Reload Window**).
+3. Run `/apia-ingest` to learn the project.
+
+The manual copy instructions below remain available as a fallback if you prefer
+to copy the files yourself.
+
+---
+
 ## Files to look into
 
 For each entry below, **Action** tells you whether you normally **EDIT**,
