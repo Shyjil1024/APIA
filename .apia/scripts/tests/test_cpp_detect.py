@@ -191,3 +191,66 @@ def test_doctor_report_is_renderable_string():
     text = ingest.format_doctor_report(report)
     assert "APIA doctor" in text
     assert "cmake" in text
+
+
+# ---------------------------------------------------------------------------
+# doctor exit-code policy (review issue 1): a healthy Linux C++ toolchain must
+# not be a hard failure just because Windows-only / optional tools are absent.
+# ---------------------------------------------------------------------------
+def test_doctor_default_tools_present_cpp_toolchain_has_no_missing_required():
+    # In this sandbox cmake/ctest/g++/make/git are present but msbuild/cl (and
+    # possibly a standalone pytest shim) are absent. The exit-code oracle is
+    # missing_required, which must be EMPTY so the preflight gate passes.
+    report = ingest.doctor()
+    # warnings still list every missing tool (the text is useful) ...
+    assert any("msbuild" in w or "cl" in w for w in report["warnings"])
+    # ... but none of the absent tools are REQUIRED on this host.
+    assert report["missing_required"] == [], report["missing_required"]
+
+
+def test_doctor_missing_required_tool_gates_exit():
+    # A missing cpp-category tool IS a hard failure.
+    tools = [
+        ("cmake", ["--version"], "CMake.", "cpp"),
+        ("definitely-not-a-real-tool-xyz", ["--version"], "Missing.", "cpp"),
+    ]
+    report = ingest.doctor(tools=tools, required_categories={"cpp", "core"})
+    assert "definitely-not-a-real-tool-xyz" in report["missing_required"]
+
+
+def test_doctor_windows_tools_are_not_required_on_this_host():
+    tools = [
+        ("msbuild", ["-version"], "MSBuild.", "windows"),
+        ("cl", [], "cl.exe presence-only.", "windows"),
+    ]
+    report = ingest.doctor(tools=tools, required_categories={"cpp", "core"})
+    # Absent but windows-category -> warned, never a hard failure here.
+    assert report["missing_required"] == []
+    assert report["warnings"]
+
+
+def test_doctor_legacy_three_tuple_entries_still_supported():
+    # Back-compat: 3-tuple entries (no category) default to optional and never
+    # gate the exit code.
+    report = ingest.doctor(tools=[("definitely-not-a-real-tool-xyz", ["--version"], "x")])
+    assert report["missing_required"] == []
+    assert report["tools"][0]["present"] is False
+
+
+def test_doctor_repo_path_resolves_required_categories_for_cpp(tmp_path):
+    # A C++ repo makes the cpp category required; a bogus cpp-ish check is still
+    # resolved via repo stack detection (cmake present here, so no false fail).
+    repo = tmp_path / "cpprepo"
+    repo.mkdir()
+    _write(str(repo / "CMakeLists.txt"),
+           "cmake_minimum_required(VERSION 3.14)\nproject(x CXX)\n")
+    cats = ingest.required_tool_categories(str(repo))
+    assert "cpp" in cats and "core" in cats
+    assert "windows" not in cats
+
+
+def test_cl_is_presence_only_in_report():
+    # cl is marked presence-only: when present it reports no version probe, and
+    # the renderer shows a clear note rather than "(version unavailable)".
+    cl_entry = next(e for e in ingest.DOCTOR_TOOLS if e[0] == "cl")
+    assert cl_entry[1] == []  # version_args empty -> presence-only

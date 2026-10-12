@@ -553,19 +553,82 @@ def _compose_cpp_question(build_system, frameworks, kind):
 # version via a local `tool --version` subprocess (an allowed LOCAL command,
 # consistent with verify.py only ever spawning local build/test commands). It is
 # strictly offline: no network, no LLM.
+# Each tool entry is (exe, version_args, description, category). The CATEGORY
+# drives the doctor EXIT-CODE policy (not the warning text, which is always
+# emitted for every missing tool because it is useful):
+#   "cpp"      -> required for a C++ CMake/CTest run on ANY host.
+#   "core"     -> required on every host regardless of stack (git).
+#   "windows"  -> MSVC-toolchain tools that exist ONLY inside a VS Developer
+#                 shell on Windows; their absence is NEVER a hard failure on a
+#                 non-Windows host (or when the resolved run does not use them).
+#   "optional" -> nice-to-have / alternative-invocation tools whose absence must
+#                 never gate a run (e.g. a standalone `pytest` shim, since the
+#                 Python path invokes `python -m pytest`).
 DOCTOR_TOOLS = [
-    ("cmake", ["--version"], "CMake build system (C++ configure/build)."),
-    ("ctest", ["--version"], "CTest test runner (C++)."),
-    ("g++", ["--version"], "GNU C++ compiler."),
-    ("gcc", ["--version"], "GNU C compiler."),
-    ("make", ["--version"], "GNU make."),
-    ("msbuild", ["-version"], "MSBuild (Windows/VS; present only inside a VS Developer shell)."),
-    ("cl", [], "MSVC compiler cl.exe (Windows/VS Developer shell only)."),
-    ("git", ["--version"], "Git."),
-    ("pytest", ["--version"], "pytest (Python test runner)."),
+    ("cmake", ["--version"], "CMake build system (C++ configure/build).", "cpp"),
+    ("ctest", ["--version"], "CTest test runner (C++).", "cpp"),
+    ("g++", ["--version"], "GNU C++ compiler.", "cpp"),
+    ("gcc", ["--version"], "GNU C compiler.", "optional"),
+    ("make", ["--version"], "GNU make.", "cpp"),
+    ("msbuild", ["-version"], "MSBuild (Windows/VS; present only inside a VS Developer shell).", "windows"),
+    # cl.exe has no `--version` flag: run with no args it prints its banner on
+    # stderr and exits non-zero, so there is no clean version line to parse. It
+    # is deliberately a PRESENCE-ONLY check (version_args == []): we report
+    # whether it is reachable, not a version string.
+    ("cl", [], "MSVC compiler cl.exe (Windows/VS Developer shell only; presence-only, no version probe).", "windows"),
+    ("git", ["--version"], "Git.", "core"),
+    ("pytest", ["--version"], "pytest (Python test runner).", "optional"),
 ]
 # Tools that on Windows live only inside the "VS 2022 Developer Command Prompt".
 _VS_DEV_SHELL_TOOLS = {"msbuild", "cl"}
+
+# Categories whose ABSENCE should gate the doctor exit code when no specific
+# stack has been resolved. Windows/optional tools are intentionally excluded so
+# a complete C++ toolchain on a non-Windows host exits 0 even though msbuild/cl/
+# standalone-pytest are (correctly) missing. When a repo path IS supplied,
+# required_tool_categories() narrows this to the detected stack.
+_DEFAULT_REQUIRED_CATEGORIES = {"cpp", "core"}
+
+# Map a detected stack name -> the tool categories required to run it. "core"
+# (git) is always required. Unknown/other stacks fall back to "core" only.
+_STACK_REQUIRED_CATEGORIES = {
+    "cpp": {"cpp", "core"},
+}
+
+
+def _tool_entry_fields(entry):
+    """Normalize a DOCTOR_TOOLS entry to (exe, version_args, desc, category).
+
+    Accepts legacy 3-tuples (exe, version_args, desc) for backward compatibility
+    with callers/tests that predate the category field; such entries default to
+    the ``optional`` category so they never gate the exit code unexpectedly.
+    """
+    if len(entry) >= 4:
+        return entry[0], entry[1], entry[2], entry[3]
+    exe, version_args, desc = entry
+    return exe, version_args, desc, "optional"
+
+
+def required_tool_categories(repo_path=None):
+    """Return the set of tool categories whose absence should gate the exit code.
+
+    When ``repo_path`` resolves to a known stack (via detect_stacks), the
+    required set is that stack's categories; otherwise the cross-stack default
+    ({cpp, core}) is used. Windows-only and optional tools are never in the set,
+    so a healthy non-Windows C++ toolchain exits 0. This mirrors how
+    verify.preflight_missing_tool only checks the tools the resolved run uses.
+    """
+    if not repo_path or not os.path.isdir(repo_path):
+        return set(_DEFAULT_REQUIRED_CATEGORIES)
+    try:
+        files = walk_repo(repo_path)
+        stacks = detect_stacks(repo_path, files)
+    except Exception:  # detection is best-effort; never let it crash doctor
+        return set(_DEFAULT_REQUIRED_CATEGORIES)
+    required = {"core"}
+    for stack in stacks:
+        required |= _STACK_REQUIRED_CATEGORIES.get(stack, set())
+    return required or set(_DEFAULT_REQUIRED_CATEGORIES)
 
 
 def _tool_version(exe, version_args):
@@ -594,7 +657,7 @@ def _tool_version(exe, version_args):
     return None
 
 
-def doctor(tools=None):
+def doctor(tools=None, repo_path=None, required_categories=None):
     """Offline toolchain preflight. Returns a dict report; also human-printable.
 
     For each tool: locate it on PATH with shutil.which (NO execution needed to
@@ -602,23 +665,45 @@ def doctor(tools=None):
     `tool --version`. Missing tools and the Windows VS-Developer-shell
     requirement for MSBuild/cl are flagged as clear WARNINGS. Stdlib-only and
     strictly offline.
+
+    EXIT-CODE POLICY (``missing_required``): a missing tool is only a hard
+    failure when its category is required for the resolved run. ``warnings``
+    still lists EVERY missing tool (the text is useful), but ``missing_required``
+    lists only the subset whose category gates the exit code. The required
+    categories are resolved from ``repo_path`` (its detected stack) when given,
+    else from ``required_categories``, else the cross-stack default
+    ({cpp, core}). Windows-only (msbuild/cl) and optional (standalone pytest,
+    gcc) tools are therefore never counted as failures on a non-Windows host.
     """
     import shutil  # stdlib; shutil.which is a PATH lookup, not a network call
 
     if tools is None:
         tools = DOCTOR_TOOLS
+    if required_categories is None:
+        required_categories = required_tool_categories(repo_path)
+    required_categories = set(required_categories)
     results = []
     warnings = []
-    for exe, version_args, desc in tools:
+    missing_required = []
+    for entry in tools:
+        exe, version_args, desc, category = _tool_entry_fields(entry)
         path = shutil.which(exe)
         present = path is not None
-        version = _tool_version(exe, version_args) if present else None
-        entry = {
+        # An empty version_args means the tool is checked presence-only (e.g.
+        # cl.exe has no clean --version banner). We never run it; we only report
+        # whether it is reachable.
+        version_probed = bool(version_args)
+        version = _tool_version(exe, version_args) if (present and version_probed) else None
+        is_required = category in required_categories
+        tool_entry = {
             "tool": exe,
             "present": present,
             "path": path,
             "version": version,
+            "version_probed": version_probed,
             "description": desc,
+            "category": category,
+            "required": is_required,
         }
         if not present:
             if exe in _VS_DEV_SHELL_TOOLS:
@@ -631,9 +716,16 @@ def doctor(tools=None):
             else:
                 warn = "WARNING: '{}' not found on PATH ({}).".format(exe, desc)
             warnings.append(warn)
-            entry["warning"] = warn
-        results.append(entry)
-    return {"tools": results, "warnings": warnings}
+            tool_entry["warning"] = warn
+            if is_required:
+                missing_required.append(exe)
+        results.append(tool_entry)
+    return {
+        "tools": results,
+        "warnings": warnings,
+        "missing_required": missing_required,
+        "required_categories": sorted(required_categories),
+    }
 
 
 def format_doctor_report(report):
@@ -641,10 +733,14 @@ def format_doctor_report(report):
     lines = ["APIA doctor / preflight (offline toolchain check)", ""]
     for e in report["tools"]:
         if e["present"]:
-            ver = e["version"] or "(version unavailable)"
+            if not e.get("version_probed", True):
+                ver = "(presence-only; no version probe)"
+            else:
+                ver = e["version"] or "(version unavailable)"
             lines.append("  [ok]   {:<8} {}  -> {}".format(e["tool"], e["path"], ver))
         else:
-            lines.append("  [MISS] {:<8} not found on PATH".format(e["tool"]))
+            tag = "required" if e.get("required") else "optional"
+            lines.append("  [MISS] {:<8} not found on PATH ({})".format(e["tool"], tag))
     if report["warnings"]:
         lines.append("")
         lines.append("Warnings:")
@@ -653,6 +749,20 @@ def format_doctor_report(report):
     else:
         lines.append("")
         lines.append("All checked tools present.")
+    # The exit code gates only on REQUIRED tools; make that explicit so a
+    # non-Windows host with a healthy C++ toolchain reads as OK despite the
+    # (expected) msbuild/cl/standalone-pytest warnings above.
+    missing_required = report.get("missing_required")
+    if missing_required is not None:
+        lines.append("")
+        if missing_required:
+            lines.append(
+                "Preflight: FAIL -- missing required tool(s): {}.".format(
+                    ", ".join(missing_required)))
+        else:
+            lines.append(
+                "Preflight: OK -- all required tools present "
+                "(any warnings above are optional/other-platform tools).")
     return "\n".join(lines) + "\n"
 
 
@@ -1227,10 +1337,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.doctor:
-        report = doctor()
+        # Resolve required tools from the target repo's detected stack when the
+        # path is a real directory (so e.g. a C++ repo requires cmake/ctest but
+        # not msbuild on Linux). Falls back to the cross-stack default otherwise.
+        doctor_repo = args.repo_path if os.path.isdir(args.repo_path) else None
+        report = doctor(repo_path=doctor_repo)
         print(format_doctor_report(report), end="")
-        # Non-zero exit if any tool is missing, so a preflight can gate a run.
-        return 1 if report["warnings"] else 0
+        # Non-zero exit ONLY when a REQUIRED tool is missing, so a preflight can
+        # gate a run without false-failing on absent optional/other-platform
+        # tools (msbuild/cl on Linux, a standalone pytest shim, etc.).
+        return 1 if report["missing_required"] else 0
 
     if not os.path.isdir(args.repo_path):
         parser.error("repo_path is not a directory: {}".format(args.repo_path))

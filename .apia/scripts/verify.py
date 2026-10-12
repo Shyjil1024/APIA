@@ -377,19 +377,29 @@ def resolve_build_command(adapter):
     return None
 
 
-def _config_path_for(repo_path):
-    """Return the .apia/config.yml path shipped with this package (not the repo).
+def _config_paths_for(repo_path=None):
+    """Return candidate .apia/config.yml paths in RESOLUTION ORDER (repo first).
 
-    The optional cpp overrides live in the APIA package config, consistent with
-    how ingest reads confidence_threshold. Falls back to None when unreadable.
+    Mirrors ingest._load_confidence_threshold: the TARGET repo's own
+    ``.apia/config.yml`` is consulted first (so a project can pin its own
+    ``cpp:`` overrides), then the APIA PACKAGE config shipped next to this
+    script. Only paths that exist on disk are returned.
     """
+    candidates = []
+    if repo_path:
+        candidates.append(os.path.join(repo_path, ".apia", "config.yml"))
     apia_dir = os.path.dirname(_SCRIPTS_DIR)
-    candidate = os.path.join(apia_dir, "config.yml")
-    return candidate if os.path.isfile(candidate) else None
+    candidates.append(os.path.join(apia_dir, "config.yml"))
+    return [c for c in candidates if os.path.isfile(c)]
 
 
 def load_cpp_overrides(repo_path=None):
-    """Return the optional ``cpp:`` overrides block from .apia/config.yml, or {}.
+    """Return the optional ``cpp:`` overrides block, or {}.
+
+    Resolution is REPO-FIRST (consistent with how ingest resolves
+    confidence_threshold): the target repo's own ``.apia/config.yml`` wins, then
+    the APIA package config is used as a fallback. The first config file that
+    actually declares a ``cpp:`` block provides the overrides.
 
     This is a FALLBACK: present only when a project pins non-default values
     (build_dir, cmake_path, build_config, test_command_override, build_system).
@@ -399,16 +409,16 @@ def load_cpp_overrides(repo_path=None):
         import yaml
     except ImportError:
         return {}
-    cfg = _config_path_for(repo_path)
-    if not cfg:
-        return {}
-    try:
-        with open(cfg, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-    except (OSError, ValueError):
-        return {}
-    block = data.get("cpp")
-    return block if isinstance(block, dict) else {}
+    for cfg in _config_paths_for(repo_path):
+        try:
+            with open(cfg, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, ValueError):
+            continue
+        block = data.get("cpp")
+        if isinstance(block, dict):
+            return block
+    return {}
 
 
 def _apply_cpp_overrides(adapter, overrides):
@@ -541,27 +551,75 @@ def _collect_command(adapter):
     return ntd.get("collect_command") or "python -m pytest --collect-only -q"
 
 
-def collect_nodes(adapter, repo_path, targets=None):
-    """Return the sorted list of pytest node ids the suite currently collects.
+# CTest "-N" listing line, e.g. "  Test #1: InventoryTest.ReordersWhenLow".
+_CTEST_LISTING_RE = re.compile(r"Test\s+#\d+:\s+(\S.*)$")
 
-    Runs the adapter's collect_command (``pytest --collect-only -q``) and parses
-    the node ids it prints (one per line, e.g. ``tests/test_x.py::test_y``). This
-    is the "what tests exist" oracle used to persist a baseline node set and to
-    detect regression-by-removal (a pre-change test that disappeared).
+
+def _parse_pytest_nodes(text):
+    """Parse ``pytest --collect-only -q`` output into node ids (unchanged).
+
+    pytest -q --collect-only prints node ids containing ``::``; the summary
+    footer lines ("N tests collected", "no tests ran") do not. This is the
+    EXACT, byte-for-byte original pytest behavior and must not change.
+    """
+    nodes = []
+    for line in text.splitlines():
+        line = line.strip()
+        if "::" in line and not line.startswith(("<", "=")):
+            nodes.append(line)
+    return nodes
+
+
+def _parse_ctest_nodes(text):
+    """Parse ``ctest -N`` output into stable test-name node ids.
+
+    ``ctest -N`` lists each registered test as ``  Test #N: <name>`` and ends
+    with ``Total Tests: N``. We key the node set on the test NAME (not the
+    volatile ``#N`` index), prefixed with ``ctest::`` so a C++ node id is never
+    mistaken for a pytest ``path::func`` id. This gives the removal check a real
+    oracle for ctest: a deleted/renamed C++ test drops out of the set and is
+    flagged as a removed node, mirroring the pytest guarantee.
+    """
+    nodes = []
+    for line in text.splitlines():
+        m = _CTEST_LISTING_RE.search(line)
+        if m:
+            name = m.group(1).strip()
+            if name:
+                nodes.append("ctest::" + name)
+    return nodes
+
+
+# result_format -> collect-output node parser. pytest is the default so the
+# Python path is byte-for-byte unchanged.
+_NODE_PARSERS = {
+    "pytest": _parse_pytest_nodes,
+    "ctest": _parse_ctest_nodes,
+    # gtest/msbuild list tests differently and are not executed in-sandbox; they
+    # fall through to pytest's parser (returning [] for their listings), so the
+    # counts-based regression check still applies while removal-detection is a
+    # no-op for them (documented in compare_to_baseline).
+}
+
+
+def collect_nodes(adapter, repo_path, targets=None, result_format="pytest"):
+    """Return the sorted list of test node ids the suite currently collects.
+
+    Runs the adapter's collect_command and parses the node ids it prints. The
+    parser is selected by ``result_format``:
+      * pytest -> ``path::func`` node ids (unchanged default behavior);
+      * ctest  -> ``ctest::<test-name>`` ids parsed from ``ctest -N``'s listing,
+        so a deleted/renamed C++ test is caught by regression-by-removal.
+    This is the "what tests exist" oracle used to persist a baseline node set and
+    to detect regression-by-removal (a pre-change test that disappeared).
     """
     argv = _split_command(_collect_command(adapter))
     if targets:
         argv = argv + list(targets)
     _, stdout, stderr = _run(argv, cwd=repo_path)
     text = (stdout or "") + "\n" + (stderr or "")
-    nodes = []
-    for line in text.splitlines():
-        line = line.strip()
-        # pytest -q --collect-only prints node ids containing "::"; the summary
-        # footer lines ("N tests collected", "no tests ran") do not.
-        if "::" in line and not line.startswith(("<", "=")):
-            nodes.append(line)
-    return sorted(set(nodes))
+    parser = _NODE_PARSERS.get(result_format, _parse_pytest_nodes)
+    return sorted(set(parser(text)))
 
 
 def detect_no_tests(adapter, repo_path):
@@ -625,7 +683,11 @@ def compare_to_baseline(stored, current_counts, current_nodes):
     "no pre-change passing test now fails and no pre-change test disappeared":
 
       - ``removed_nodes``: pre-change node ids no longer collectable (a test the
-        change deleted/renamed -> potential silent loss of coverage).
+        change deleted/renamed -> potential silent loss of coverage). This now
+        works for both pytest (``path::func`` ids) and ctest (``ctest::<name>``
+        ids from ``ctest -N``); gtest/msbuild listings are not parsed into nodes
+        (not executed in-sandbox), so for those the counts-based delta below is
+        the active regression signal and removal-detection is a no-op.
       - ``passed_delta``: current passed minus baseline passed (negative means
         fewer tests pass than before -> regression).
       - ``regressed``: True when the change broke the pre-change guarantee.
@@ -864,7 +926,7 @@ def verify(repo_path, adapter_path=None, new_tests=None, baseline_only=False,
     # Node set of the EXISTING suite (new-test target excluded) -- the oracle for
     # the persisted baseline and for regression-by-removal detection.
     existing_nodes = [
-        n for n in collect_nodes(adapter, repo_path)
+        n for n in collect_nodes(adapter, repo_path, result_format=result_format)
         if not any(t in n for t in (new_tests or []))
     ]
 
@@ -1051,16 +1113,25 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    # --doctor: shared offline preflight; no repo path required.
+    # --doctor: shared offline preflight. A repo_path is OPTIONAL but, when a
+    # real directory is given, it is used to resolve which tools are REQUIRED for
+    # that repo's detected stack (so the examples in PROOF.md/USAGE that pass
+    # samples/cppapp are meaningful: a C++ repo requires cmake/ctest, not msbuild
+    # on Linux).
     if args.doctor:
         if ingest is None:
             parser.error("doctor preflight unavailable: could not import ingest.py")
-        report = ingest.doctor()
+        doctor_repo = (args.repo_path
+                       if args.repo_path and os.path.isdir(args.repo_path)
+                       else None)
+        report = ingest.doctor(repo_path=doctor_repo)
         print(ingest.format_doctor_report(report), end="")
         if args.json:
             print(json.dumps(report, indent=2, sort_keys=True))
-        # Exit non-zero when any checked tool is missing so a preflight can gate.
-        return 0 if not report["warnings"] else 1
+        # Exit non-zero ONLY when a REQUIRED tool for the resolved stack is
+        # missing, so a preflight can gate a run without false-failing on absent
+        # optional/other-platform tools (msbuild/cl on Linux, standalone pytest).
+        return 0 if not report["missing_required"] else 1
 
     if not args.repo_path:
         parser.error("repo_path is required (except with --doctor).")

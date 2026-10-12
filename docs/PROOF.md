@@ -164,17 +164,22 @@ framework (**GoogleTest via CTest**, from `*_test.cpp` + FetchContent) with a
 **confidence score** vs. `confidence_threshold` (0.75). When confidence is below
 threshold it records a precomposed, specific clarifying question instead of guessing.
 
-Preflight the toolchain offline at any time:
+Preflight the toolchain offline at any time. Passing the repo path lets the
+doctor resolve which tools are **required** for that repo's detected stack (a C++
+repo requires cmake/ctest/g++/make, not the Windows-only msbuild/cl):
 
 ```bash
 .venv/bin/python .apia/scripts/verify.py --doctor samples/cppapp
 ```
 
-Captured output:
+Captured output (exit code **0** on this Linux host: every *required* C++ tool is
+present, and the absent msbuild/cl/standalone-pytest are warned as
+optional/other-platform, not counted as failures):
 
 ```
 --doctor => cmake 3.22.2 / ctest 3.22.2 / g++ 11.5 / gcc / make / git present
             WARNS msbuild/cl (VS 2022 Developer Command Prompt) + standalone pytest missing
+            Preflight: OK -- all required tools present (warnings are optional/other-platform)
 ```
 
 ### Steps 2-3 - CLARIFY / MODIFY: the worked change (dry-run)

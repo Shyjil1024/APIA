@@ -265,6 +265,35 @@ def test_parser_for_unknown_falls_back_to_pytest():
     assert verify._parser_for("nope") is verify._parse_pytest_output
 
 
+# --- UNIT: collect-node parsing per result_format ----------------------------
+
+
+def test_ctest_node_parser_extracts_named_nodes():
+    # `ctest -N` lists each test as "Test #N: <name>"; the node set keys on the
+    # NAME (prefixed ctest::), so a deleted/renamed C++ test drops out of the set.
+    nodes = verify._parse_ctest_nodes(CTEST_COLLECT)
+    assert nodes == ["ctest::Add.AddsTwoPositives", "ctest::Add.AddsNegativeAndPositive"]
+
+
+def test_pytest_node_parser_unchanged():
+    text = (
+        "tests/test_x.py::test_a\n"
+        "tests/test_x.py::test_b\n"
+        "<Module tests/test_x.py>\n"
+        "2 tests collected in 0.01s\n"
+    )
+    assert verify._parse_pytest_nodes(text) == [
+        "tests/test_x.py::test_a",
+        "tests/test_x.py::test_b",
+    ]
+
+
+def test_collect_nodes_dispatches_on_result_format_pytest_default():
+    # The pytest node parser is the default so the Python path is unchanged.
+    assert verify._NODE_PARSERS.get("pytest") is verify._parse_pytest_nodes
+    assert verify._NODE_PARSERS.get("ctest") is verify._parse_ctest_nodes
+
+
 # --- UNIT: command splitting rules ------------------------------------------
 
 
@@ -307,6 +336,28 @@ def test_cpp_overrides_block_optional_and_absent_by_default():
     # override is loaded (fallback-only, never required).
     overrides = verify.load_cpp_overrides(REPO_ROOT)
     assert overrides == {}
+
+
+def test_repo_local_cpp_override_is_honored(tmp_path):
+    # review issue 3: a `cpp:` block in the TARGET repo's own .apia/config.yml
+    # must win (repo-first resolution), mirroring how ingest resolves
+    # confidence_threshold. Previously verify read only the package config.
+    repo = tmp_path / "repo"
+    (repo / ".apia").mkdir(parents=True)
+    (repo / ".apia" / "config.yml").write_text(
+        "cpp:\n  test_command_override: \"ctest --test-dir out --output-on-failure\"\n",
+        encoding="utf-8",
+    )
+    overrides = verify.load_cpp_overrides(str(repo))
+    assert overrides.get("test_command_override") == "ctest --test-dir out --output-on-failure"
+
+
+def test_cpp_override_falls_back_to_package_config_when_repo_has_none(tmp_path):
+    # A repo with NO cpp block falls back to the package config (which ships the
+    # block commented -> {}), so the default path is unaffected.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert verify.load_cpp_overrides(str(repo)) == {}
 
 
 def test_test_command_override_applied_when_present():
@@ -443,6 +494,49 @@ def test_e2e_cppapp_baseline_then_regression_delta_catches_break(tmp_path):
     regression = _phase(post, "regression")
     assert regression["counts"]["failed"] >= 1
     assert regression["passed"] is False
+    assert post["ok"] is False
+
+
+@_requires_toolchain
+def test_e2e_cpp_regression_detects_removed_test_vs_baseline(tmp_path):
+    """A C++ test deleted after the baseline is flagged as a removed node.
+
+    Mirrors the Python test_regression_detects_removed_test_vs_baseline: capture
+    a green pre-change baseline (which now records the ctest node set via
+    `ctest -N`), then DELETE an existing test and re-run. The removal must show
+    up in regression_delta["removed_nodes"] and fail the run, proving C++
+    regression-by-removal is now operative (not just the counts-based delta)."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    bl = str(tmp_path / "bl.json")
+
+    # Capture the GREEN pre-change baseline (build + baseline + node set).
+    pre = verify.verify(repo, adapter_path=CPP_ADAPTER, baseline_only=True,
+                        baseline_file=bl)
+    assert pre["ok"] is True
+    assert os.path.isfile(bl)
+    import json as _json
+    with open(bl, "r", encoding="utf-8") as fh:
+        stored = _json.load(fh)
+    # The baseline must have captured ctest nodes (the removal oracle).
+    assert stored["nodes"], "ctest -N node set must be persisted for C++"
+    assert all(n.startswith("ctest::") for n in stored["nodes"])
+
+    # DELETE an existing test (remove the Subtract.SubtractsTwoNumbers case).
+    test_file = os.path.join(repo, "tests", "test_mathops.cpp")
+    with open(test_file, "r", encoding="utf-8") as fh:
+        src = fh.read()
+    removed_line = ("TEST(Subtract, SubtractsTwoNumbers) "
+                    "{ EXPECT_EQ(mathops::subtract(10, 4), 6); }")
+    assert removed_line in src
+    with open(test_file, "w", encoding="utf-8") as fh:
+        fh.write(src.replace(removed_line, ""))
+
+    post = verify.verify(repo, adapter_path=CPP_ADAPTER, baseline_file=bl)
+    delta = post["regression_delta"]
+    assert delta is not None
+    assert delta["removed_nodes"], "a removed pre-change C++ test must be flagged"
+    assert any("Subtract.SubtractsTwoNumbers" in n for n in delta["removed_nodes"])
+    assert delta["regressed"] is True
     assert post["ok"] is False
 
 
