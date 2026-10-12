@@ -1,0 +1,45 @@
+# APIA (Autonomous Project Intelligence Agent) configuration.
+#
+# This file is read by the off-model preprocessing scripts and referenced by the
+# Tier-2 skills/agents. It carries NO secrets and never configures an external LLM
+# backend: model inference always runs on the user's existing Copilot session.
+# External *data* is fetched via MCP/Copilot tool-use only.
+
+# token_budget: per-stage soft limits (approximate token counts) used to warn when
+# a stage's assembled context would exceed its budget. These are advisory ceilings
+# that keep each stage of the ingest -> clarify -> modify -> test -> apply loop
+# token-cheap; exceeding one should trigger a warning, not a hard failure.
+token_budget:
+  ingest: 8000      # distilled knowledge summary returned from the forked ingest stage
+  clarify: 2000     # assumptions list + numbered clarifying questions
+  modify: 6000      # plan + proposed diff grounded in the knowledge base
+  test: 6000        # regression + new/characterization test authoring and results
+  apply: 2000       # final change summary and commit/PR preparation
+
+# confidence_threshold: the anti-hallucination clarify gate. If the agent's
+# confidence in its understanding of the request falls below this value (0.0-1.0),
+# it MUST ask numbered clarifying questions instead of guessing.
+confidence_threshold: 0.75
+
+# stacks: first-class language support. Python is the Phase-1 primary (its adapter
+# is fully implemented first); C++, C#, and Groovy ship as adapter stubs and reach
+# parity in Phase 2. Each entry's `adapter` points at a file under .apia/adapters/.
+stacks:
+  - name: python
+    primary: true          # Phase-1 primary host/stack
+    adapter: adapters/python.yml
+  - name: cpp
+    primary: false
+    adapter: adapters/cpp.yml
+  - name: csharp
+    primary: false
+    adapter: adapters/csharp.yml
+  - name: groovy
+    primary: false
+    adapter: adapters/groovy.yml
+
+# knowledge_dir: where the cached, committed project knowledge base lives. Ingestion
+# writes compact Markdown artifacts here (project-map.md, architecture.md, etc.);
+# this directory is committed so knowledge is shared across the team and survives
+# sessions. Path is relative to the .apia/ directory.
+knowledge_dir: knowledge/

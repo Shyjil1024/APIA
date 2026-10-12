@@ -1,0 +1,13 @@
+[project]
+name = "pyapp"
+version = "0.1.0"
+description = "Tiny calculator sample used as the APIA Phase-1 green baseline (existing passing tests)."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

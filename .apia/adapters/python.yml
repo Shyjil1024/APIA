@@ -1,0 +1,62 @@
+# APIA stack adapter: Python (Phase-1 primary, fully implemented).
+#
+# An adapter is a declarative command map that tells the APIA loop how to build,
+# test, and author tests for a given stack. It contains NO model inference and
+# issues NO network/LLM calls; it is read by the off-model scripts and by the
+# Tier-2 skills/agents so stage behavior is stack-aware. See
+# .apia/adapters/README.md for the schema contract.
+
+name: python
+primary: true          # Phase-1 primary stack
+language: Python
+
+# How the TEST stage runs the project's existing tests (regression guard) and
+# any newly generated tests. Run from the repository root.
+test_command: "python -m pytest"
+
+# Glob(s) the ingester / tester use to discover test files for this stack.
+test_discovery_glob:
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "tests/**/*.py"
+
+# How to decide a repo (or touched area) has "no tests" -> trigger the
+# characterization-test path before modifying (legacy case). "No tests" means
+# zero files match test_discovery_glob (equivalently, pytest collects 0 items).
+no_tests_detection:
+  # "No tests" means zero files match test_discovery_glob. pytest phrases a
+  # zero-collection result as "collected 0 items" when it ran from testpaths, or
+  # "no tests collected" / "no tests ran" when it fell back to recursive
+  # discovery and still found nothing. verify.py recognizes all of these; the
+  # value below is the primary signal.
+  description: "No files match test_discovery_glob (pytest collects 0 items / no tests collected)."
+  collect_command: "python -m pytest --collect-only -q"
+  zero_tests_signal: "collected 0 items"
+
+# Template reference used by the apia-test-authoring skill when it must generate
+# characterization tests (pin current behavior) or new behavior tests. The path
+# is relative to the package root; the skill resolves and fills it in.
+characterization_test_template: ".github/skills/apia-test-authoring/templates/python_characterization_test.py.tmpl"
+
+# Build / lint commands. Pure Python packages usually need no compile step; the
+# optional lint command is advisory and only run when the tool is present.
+build_command: null                 # no build step for a plain Python package
+lint_command: "python -m pyflakes"  # advisory; skipped if pyflakes is absent
+
+# Manifests that identify a Python project (mirrors ingest.py STACK_RULES).
+manifests:
+  - requirements.txt
+  - "requirements*.txt"
+  - pyproject.toml
+  - setup.py
+  - setup.cfg
+  - Pipfile
+
+# Source file extensions for this stack.
+extensions:
+  - ".py"
+
+# Test frameworks recognized for this stack (first = default).
+frameworks:
+  - pytest
+  - unittest

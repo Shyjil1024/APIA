@@ -1,0 +1,49 @@
+# APIA stack adapter: C++ (STUB -- Phase-2 fills to parity with python.yml).
+#
+# Documented placeholder. Same schema as python.yml (see
+# .apia/adapters/README.md). Commands are TODO markers, not runnable yet. This
+# adapter performs NO model inference and NO network/LLM calls.
+
+name: cpp
+primary: false
+language: C++
+
+# TODO(phase-2): pick the project's build/test runner. Common choices:
+#   - CMake + CTest:      "ctest --test-dir build"
+#   - GoogleTest/Catch2 built via CMake, then CTest drives them.
+test_command: null            # TODO(phase-2): e.g. "ctest --test-dir build --output-on-failure"
+
+test_discovery_glob:          # TODO(phase-2): refine per test framework/layout
+  - "**/*_test.cpp"
+  - "**/test_*.cpp"
+  - "test/**/*.cpp"
+  - "tests/**/*.cpp"
+
+no_tests_detection:
+  description: "TODO(phase-2): no files match test_discovery_glob / ctest lists 0 tests."
+  collect_command: null       # TODO(phase-2): e.g. "ctest --test-dir build -N"
+  zero_tests_signal: null     # TODO(phase-2): e.g. "Total Tests: 0"
+
+characterization_test_template: null  # TODO(phase-2): add GoogleTest/Catch2 template
+
+build_command: null           # TODO(phase-2): e.g. "cmake -S . -B build && cmake --build build"
+lint_command: null            # TODO(phase-2): e.g. "clang-tidy"
+
+manifests:
+  - CMakeLists.txt
+  - conanfile.txt
+  - conanfile.py
+  - Makefile
+
+extensions:
+  - ".cpp"
+  - ".cc"
+  - ".cxx"
+  - ".hpp"
+  - ".hh"
+  - ".h"
+
+frameworks:                   # TODO(phase-2): confirm per project
+  - googletest
+  - catch2
+  - ctest

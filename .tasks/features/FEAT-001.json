@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Establish the baseline: verify the current Copilot portability mechanisms per IDE, set up the Python toolchain, scaffold the full package directory layout, and create a minimal sample Python repository that the loop will be proven against. This feature leaves a committable, runnable skeleton with a green sample baseline. Independent of later features except that they build on this scaffold.",
+  "status": "completed",
+  "steps": [
+    "Create a Python virtualenv and install pytest (network is OPEN_INTERNET): python3 -m venv .venv && . .venv/bin/activate && pip install pytest. Record the exact versions in docs/PHASE-1-TASKS.md under a 'Toolchain' note.",
+    "Add a short docs/PORTABILITY.md capturing the verified mechanism matrix from docs/ARCHITECTURE.md section 2 (which files each IDE honors: copilot-instructions.md universal; .github/instructions/*.instructions.md NOT in JetBrains; prompt files in VS Code/VS/JetBrains but deprecated in VS Code Agent Host; Agent Skills SKILL.md primary for VS Code host). Note the date verified and that this must be re-checked per Copilot release.",
+    "Scaffold the directory layout exactly as in docs/ARCHITECTURE.md section 4: .github/{prompts,skills,agents}/ (empty .gitkeep for now), .apia/{knowledge,scripts,adapters}/, .apia/config.yml placeholder, samples/. Do NOT yet author the skill bodies (that is FEAT-003).",
+    "Write .apia/config.yml with: token_budget (per-stage soft limits), confidence_threshold for the clarify gate, stacks list [python, cpp, csharp, groovy] with python marked primary for Phase 1, and knowledge_dir pointing at .apia/knowledge/. Document each key with a comment.",
+    "Create a minimal but realistic sample Python repo under samples/pyapp/ with at least: a small package (e.g. a calculator or string-utils module with 2-3 functions), a pyproject.toml or requirements file, and EXISTING passing pytest tests covering current behavior (this is the regression-guard baseline). Keep it tiny to stay token-cheap.",
+    "Create a SECOND sample scenario proving the legacy no-tests path: samples/legacy_pyapp/ with 1-2 modules and NO tests at all, so FEAT-004 can demonstrate characterization-test generation before modifying.",
+    "Add a top-level README.md describing what the package is, the install model (commit into your repo), and how to run the Phase-1 proof. Add a .gitignore that ignores .venv/ but KEEPS .apia/knowledge/ committed (team sharing per design).",
+    "Run python3 -m pytest samples/ -q and confirm the sample baselines behave as intended (pyapp green; legacy_pyapp has no tests collected)."
+  ],
+  "acceptance_criteria": [
+    "docs/PORTABILITY.md exists and states, per IDE, which customization files are honored, with a 'verified on' date.",
+    "The directory layout from ARCHITECTURE.md section 4 exists (.github/{prompts,skills,agents}, .apia/{knowledge,scripts,adapters}, samples/).",
+    ".apia/config.yml exists with documented token_budget, confidence_threshold, stacks (python primary), and knowledge_dir keys.",
+    "samples/pyapp/ exists with source modules AND existing pytest tests, and `python3 -m pytest samples/pyapp -q` passes (green baseline).",
+    "samples/legacy_pyapp/ exists with source modules and NO tests (demonstrates the legacy case).",
+    "README.md and .gitignore exist; .gitignore excludes .venv/ but not .apia/knowledge/."
+  ],
+  "verification": [
+    "Run `python3 -m pytest samples/pyapp -q` and confirm all tests pass.",
+    "Run `python3 -m pytest samples/legacy_pyapp -q` and confirm it reports no tests collected (legacy no-tests case).",
+    "List the tree and confirm the ARCHITECTURE.md section 4 layout is present.",
+    "Confirm .apia/config.yml is valid YAML (python3 -c 'import yaml,sys; yaml.safe_load(open(\".apia/config.yml\"))' after pip install pyyaml, or a stdlib check)."
+  ],
+  "blocked_reason": null,
+  "findings": "Scaffold complete and verified on 2026-10-12. Toolchain: created .venv with pytest 8.4.2 and PyYAML 6.0.3 on Python 3.9.25 (PyYAML used only to validate/parse .apia/config.yml; it is NOT an LLM dependency). Recorded versions in docs/PHASE-1-TASKS.md under a 'Toolchain' note. Created docs/PORTABILITY.md with the verified mechanism matrix (verified-on date 2026-10-12, re-check-per-release note). Scaffolded exact ARCHITECTURE.md section 4 layout: .github/{prompts,skills,agents}/ and .apia/{knowledge,scripts,adapters}/ with .gitkeep placeholders (skill bodies deliberately deferred to FEAT-003); .apia/knowledge/.gitkeep carries a note so the committed knowledge dir survives. Wrote .apia/config.yml (valid YAML) with documented token_budget per-stage soft limits, confidence_threshold 0.75 clarify gate, stacks [python primary, cpp, csharp, groovy] each pointing at an adapters/*.yml file (adapter files themselves are FEAT-002), and knowledge_dir: knowledge/. samples/pyapp = calc package (add/subtract/divide) with pyproject.toml (pytest pythonpath=['.'], testpaths=['tests']) and 4 passing tests -> green baseline. samples/legacy_pyapp = inventory.py with 4 functions and NO tests -> legacy characterization target for FEAT-004. Added top-level README.md (install-by-commit model, Phase-1 proof instructions, no-external-LLM note) and .gitignore (excludes .venv/, __pycache__, .pytest_cache; explicitly does NOT ignore .apia/knowledge/). Verification: `python3 -m pytest samples/pyapp -q` -> 4 passed; `python3 -m pytest samples/legacy_pyapp -q` -> no tests ran; config.yml parses as valid YAML; grep for openai/anthropic/LLM endpoints finds matches only in .tasks/ planning files, none in package artifacts. NOTE for later features: the adapter files referenced by config.yml (adapters/python.yml etc.) do not exist yet and are expected to be authored in FEAT-002; samples/pyapp uses pyproject.toml [tool.pytest.ini_options] pythonpath to make `calc` importable without install."
+}
