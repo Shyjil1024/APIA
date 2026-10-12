@@ -1,0 +1,7 @@
+{
+  "task_id": "task-apia-phase1",
+  "task_description": "Design and prototype the Autonomous Project Intelligence Agent (APIA): a portable GitHub Copilot skill package that learns any project and drives changes semi-autonomously via a gated ingest -> clarify -> modify -> test -> apply loop, running entirely on the user's Copilot session (no external LLM). Deliver the architecture/design document (full vision in phases, Phase 1 concrete) and a minimal working Phase-1 skill package for VS Code proving the end-to-end loop on one sample repo, with Python-first stack adapters and stubs for C++/C#/Groovy.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}

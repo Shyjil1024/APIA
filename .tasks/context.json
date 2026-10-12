@@ -1,0 +1,31 @@
+{
+  "project_type": "Greenfield GitHub Copilot customization/skill package (Autonomous Project Intelligence Agent). Not a conventional application; the deliverable is a committable set of Copilot customization artifacts (SKILL.md skills, *.agent.md custom agents, prompt files, .github/copilot-instructions.md) plus off-model preprocessing scripts and per-stack adapters, proven on a sample repo.",
+  "language": "Markdown + YAML frontmatter for Copilot artifacts; Python 3 for off-model preprocessing scripts and the Phase-1 sample repo. Shell for adapter command maps.",
+  "build_system": "None for the package itself (declarative files). Phase-1 sample repo uses standard Python tooling (pytest). Node 22, Docker, gh available in sandbox if needed.",
+  "test_framework": "pytest for the Phase-1 Python sample repo and for the preprocessing scripts. Adapters abstract per-stack test commands (pytest; GoogleTest/Catch2/CTest for C++; dotnet test for C#; Gradle+Spock/JUnit for Groovy).",
+  "build_command": "N/A for the package. For sample+scripts: python3 -m pytest (install pytest first: pip install pytest).",
+  "test_command": "python3 -m pytest samples/ .apia/ -q",
+  "verification_instructions": "1) Validate every SKILL.md/*.agent.md/*.prompt.md parses: YAML frontmatter is valid and SKILL.md 'name' matches its parent directory, uses only lowercase/numbers/hyphens, <=64 chars; description present and <=1024 chars. 2) Run the off-model preprocessing scripts against samples/ and confirm they emit the .apia/knowledge/ artifacts without calling any external LLM. 3) Run python3 -m pytest to prove the sample repo's existing tests pass and the generated characterization/new tests pass. 4) Confirm no artifact or script issues a call to any external LLM API (grep for openai/anthropic/http LLM endpoints should find none).",
+  "snapshot_or_generated_files": "The ingestion scripts generate .apia/knowledge/*.md artifacts from the sample repo. Regenerate with: python3 .apia/scripts/ingest.py samples/<repo>. These are derived artifacts; the generator is the source of truth.",
+  "setup_instructions": "python3 -m venv .venv && . .venv/bin/activate && pip install pytest  (network is OPEN_INTERNET; pypi reachable). No separate LLM key is ever required or allowed.",
+  "environment_constraints": "network_mode=OPEN_INTERNET (pypi reachable, verified). Python 3.9.25, Node v22, Docker 5.2.3, gh available. HARD CONSTRAINT: the skill must NOT call any separate/external LLM API; it runs entirely on the user's Copilot session. External DATA may be fetched via MCP/Copilot tool-use only. Do not add any LLM SDK dependency.",
+  "contribution_requirements": "Package must be portable across IDEs that host Copilot and installed by committing into the user's repo. Tier-0 .github/copilot-instructions.md must work everywhere (incl. JetBrains, which supports ONLY that single instructions file + prompt files, NOT .github/instructions/*.instructions.md). Agent Skills (SKILL.md) are the richest portable mechanism and primary for the VS Code Phase-1 host. SKILL.md 'name' MUST equal its directory name and contain only lowercase letters/numbers/hyphens or it silently fails to load. Keep copilot-instructions.md short (sent on every request = token cost).",
+  "key_patterns": "Agent Skills open standard (agentskills.io): SKILL.md with YAML frontmatter {name, description, [argument-hint, user-invocable, disable-model-invocation, context]}; context: fork runs in an isolated subagent (token isolation). Custom agents: *.agent.md with {name, description, tools, model, agents, handoffs, mcp-servers, user-invocable}; handoffs implement approval-gate buttons between stages. Progressive 3-stage disclosure (discovery->activation->execution) is the native token-efficiency mechanism. Off-model preprocessing scripts do mechanical work so the model only summarizes.",
+  "relevant_files": [
+    "docs/ARCHITECTURE.md",
+    "docs/PHASE-1-TASKS.md",
+    ".github/copilot-instructions.md",
+    ".github/skills/apia-ingest/SKILL.md",
+    ".github/skills/apia-feature-loop/SKILL.md",
+    ".github/skills/apia-test-authoring/SKILL.md",
+    ".github/agents/apia-planner.agent.md",
+    ".github/agents/apia-implementer.agent.md",
+    ".github/agents/apia-tester.agent.md",
+    ".github/prompts/apia-ingest.prompt.md",
+    ".apia/scripts/ingest.py",
+    ".apia/config.yml",
+    ".apia/adapters/python.yml",
+    "samples/"
+  ],
+  "directory_structure": ".github/ holds the portable Copilot artifacts (copilot-instructions.md [Tier0], prompts/ [Tier1], skills/ and agents/ [Tier2]). .apia/ holds the cached knowledge base, config, off-model scripts, and per-stack adapters. samples/ holds the Phase-1 sample Python repo used to prove the loop. docs/ holds ARCHITECTURE.md and the Phase-1 task breakdown. .tasks/ holds this task state."
+}

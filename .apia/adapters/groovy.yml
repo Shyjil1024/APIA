@@ -1,0 +1,40 @@
+# APIA stack adapter: Groovy (STUB -- Phase-2 fills to parity with python.yml).
+#
+# Documented placeholder. Same schema as python.yml (see
+# .apia/adapters/README.md). Commands are TODO markers, not runnable yet. This
+# adapter performs NO model inference and NO network/LLM calls.
+
+name: groovy
+primary: false
+language: Groovy
+
+test_command: null            # TODO(phase-2): e.g. "./gradlew test"
+
+test_discovery_glob:          # TODO(phase-2): refine per test framework/layout
+  - "**/*Spec.groovy"
+  - "**/*Test.groovy"
+  - "src/test/groovy/**/*.groovy"
+
+no_tests_detection:
+  description: "TODO(phase-2): no Spock/JUnit specs discovered / gradle test runs 0 tests."
+  collect_command: null       # TODO(phase-2): e.g. "./gradlew test --dry-run"
+  zero_tests_signal: null     # TODO(phase-2): e.g. "NO-SOURCE"
+
+characterization_test_template: null  # TODO(phase-2): add Spock/JUnit template
+
+build_command: null           # TODO(phase-2): e.g. "./gradlew build"
+lint_command: null            # TODO(phase-2): e.g. "./gradlew codenarcMain"
+
+manifests:
+  - build.gradle
+  - settings.gradle
+  - Jenkinsfile
+  - "*.gradle"
+
+extensions:
+  - ".groovy"
+  - ".gradle"
+
+frameworks:                   # TODO(phase-2): confirm per project
+  - spock
+  - junit

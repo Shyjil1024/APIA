@@ -1,0 +1,37 @@
+"""Characterization test (APIA, Python/pytest).
+
+APIA generated this to PIN THE CURRENT behavior of untested/legacy code BEFORE any
+change, so regressions become detectable. A characterization test documents what the
+code *does today*, not what it *should* do - fill the expected values with the
+observed output of the current implementation (capture it by running the code), then
+run the suite to confirm the baseline is green before modifying.
+
+Placeholders (replace when generating):
+  {{MODULE_IMPORT}}   e.g. ``from calc.operations import add, divide``
+  {{SUBJECT}}         short name of the unit under characterization, e.g. ``add``
+  {{CASE_NAME}}       snake_case description of the case, e.g. ``adds_two_positives``
+
+This template is referenced by .apia/adapters/python.yml
+(``characterization_test_template``) and used by the apia-test-authoring skill.
+It performs NO network or LLM calls.
+"""
+
+import pytest
+
+{{MODULE_IMPORT}}
+
+
+def test_{{SUBJECT}}_{{CASE_NAME}}():
+    # Arrange: inputs that exercise the current behavior.
+    # Act: call the unit under characterization.
+    result = {{SUBJECT}}(...)  # TODO: supply representative arguments
+
+    # Assert: the OBSERVED current output (captured by running the code today),
+    # not the desired/ideal output. This pins the baseline.
+    assert result == ...  # TODO: replace with the value observed from current code
+
+
+def test_{{SUBJECT}}_raises_characterized_error():
+    # Pin any current error behavior so a change that alters it is caught.
+    with pytest.raises(Exception):  # TODO: narrow to the actual exception type
+        {{SUBJECT}}(...)  # TODO: inputs that currently raise

@@ -1,0 +1,12 @@
+# Python virtualenv (local toolchain, never committed)
+.venv/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# NOTE: .apia/knowledge/ is intentionally NOT ignored. The cached project
+# knowledge base is committed so it is shared across the team and survives
+# sessions (see docs/ARCHITECTURE.md section 1).

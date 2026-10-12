@@ -1,0 +1,15 @@
+[project]
+name = "legacy_pyapp"
+version = "0.1.0"
+description = "Legacy, originally-untested sample used to prove the APIA characterization-test path (FEAT-004)."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+# pythonpath = ["."] makes the legacy_pyapp package importable when pytest's
+# rootdir is this directory, mirroring samples/pyapp. Run tests from here.
+pythonpath = ["."]
+testpaths = ["tests"]
