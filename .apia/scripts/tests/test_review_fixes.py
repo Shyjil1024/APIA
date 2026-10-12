@@ -224,8 +224,10 @@ def test_stub_adapter_refused(tmp_path):
 
 
 def test_all_phase1_stub_adapters_refused(tmp_path):
+    # cpp.yml is completed in Phase 2 (FEAT-001) and is no longer a stub; the
+    # remaining Phase-1 stubs (csharp/groovy, null test_command) stay refused.
     repo = _copy_pyapp(tmp_path)
-    for name in ("cpp.yml", "csharp.yml", "groovy.yml"):
+    for name in ("csharp.yml", "groovy.yml"):
         stub = os.path.join(REPO_ROOT, ".apia", "adapters", name)
         with pytest.raises(verify.StubAdapterError):
             verify.verify(repo, adapter_path=stub)
