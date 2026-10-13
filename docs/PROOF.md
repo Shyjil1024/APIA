@@ -269,6 +269,111 @@ directories are gitignored.
 
 ---
 
+## Layer-1 / Layer-2 proof (grounded eval data + iterate-to-green)
+
+The two eval layers are proven the same way as the five-stage loop: the **Python** and
+**CMake + GoogleTest + CTest** flows are **EXECUTED for real in this Linux sandbox**; the
+**MSBuild / VSTest** path stays **fixture-unit-tested only** (no Windows toolchain) - no
+real MSBuild run is claimed anywhere.
+
+Everything here is off-model: `evaldata.py` (Layer 1) and `evalloop.py` (Layer 2) call **no
+model**. They assemble repo-derived eval data, run the deterministic verifier, emit a
+structured failure a model would consume, enforce the hard `max_iterations` cap, and decide
+green/stop/ask. **The code-fix step between iterations is a LIVE Copilot action and is never
+performed by the scripts.**
+
+### Executed in-sandbox vs. fixture-only (read this first)
+
+- **EXECUTED for real:** the Python flow (`samples/pyapp`) and the CMake + GoogleTest + CTest
+  flow (`samples/cppapp`) for golden / invariant / characterization / differential and the
+  full iterate-to-green cycle under the cap.
+- **FIXTURE-UNIT-TESTED only (never executed):** the MSBuild/VSTest command assembly and
+  output parsing (no Windows MSVC/MSBuild/VSTest toolchain in this sandbox). Verify it on
+  Windows with the checklist in `USAGE.md`.
+
+### Golden-file comparison (Python + C++, executed)
+
+The producer writes an artifact into a **gitignored** output directory; the loop diffs it
+against a **committed golden tree** (`golden_dir`). Python mines
+`samples/pyapp/tests/golden/{report.json,table.csv}`; C++ mines
+`samples/cppapp/tests/golden/report.json`.
+
+```bash
+# Python producer writes samples/pyapp/out/**, then golden-compare vs. the committed tree
+.venv/bin/python samples/pyapp/calc/report.py
+```
+
+The shipped `python.yml` golden block resolves the compare mode PER GLOB (one
+`artifact_glob` mixing JSON and CSV cannot share a single mode), so the JSON report is
+graded as structure and the CSV table as newline-normalized text:
+
+```
+golden => report.json matches committed golden (compare=json)
+          table.csv  matches committed golden (compare=text)
+       => GREEN
+```
+
+### Invariant checks (executed)
+
+```
+invariants => row_count_matches_input PASS / no_nans PASS / roundtrip_identity PASS
+```
+
+### Characterization capture (executed)
+
+`harvest_characterization` runs the adapter's `capture_command`, freezes stdout, and hashes
+it. Re-running against unchanged code reproduces the same hash (behavior pinned).
+
+### Differential (executed)
+
+The artifact old-vs-new delta plus the test-COUNTS differential from
+`verify.compare_to_baseline` (the saved `.apia-baseline.json`), exactly as in the C++
+before/after delta above.
+
+### Full iterate-to-green under the hard cap (executed, both stacks)
+
+Start RED (a producer that emits a wrong artifact so the golden compare fails), get the
+structured failure report, apply a fix, re-run GREEN - all bounded by `max_iterations`:
+
+```bash
+.venv/bin/python .apia/scripts/verify.py samples/pyapp \
+    --adapter .apia/adapters/python.yml --iterate --max-iterations 3 \
+    --emit-failure-report --json
+```
+
+Captured decision shape (first cycle RED, then GREEN after the live fix):
+
+```
+APIA iterate :: one deterministic self-correction cycle
+  iteration 1 / cap 3
+  token budget: ~<n> tokens vs 4000 (within budget)
+  => NEEDS FIX (hand the structured failure to the live model, then re-run the next cycle)
+  --- structured failure report (model-consumable) ---
+  { ...compact JSON the model consumes to fix... }
+```
+
+After the live fix the next `--iterate` cycle returns `=> GREEN (cycle passed; the loop
+stops immediately)`. When the cap is reached without going green the decision is
+`=> STOP (max_iterations_reached)` with a specific `ask`, and the harness exits non-zero so a
+proof can gate on it - **it never auto-applies a broken change.**
+
+### Acceptance-criteria gate (anti-circularity)
+
+For acceptance criteria describing NEW behavior the code does not yet exhibit, `evaluate`
+returns `needs_confirmation` with a specific `ask` until a human confirms them; only then is
+the criterion trusted. Criteria that pin EXISTING behavior
+(characterization/golden/invariant) need no confirmation.
+
+### CI-asserted
+
+These demonstrations are encoded as pytest so CI asserts them:
+`.apia/scripts/tests/test_e2e_loop.py` runs the Python golden / invariant / characterization
+/ differential / full-iterate-to-green-with-cap cases for real on every run;
+`.apia/scripts/tests/test_cpp_e2e.py` runs the C++ equivalents **guarded by
+`shutil.which('cmake')`/`shutil.which('ctest')`** so the suite stays portable.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:

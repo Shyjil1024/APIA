@@ -93,6 +93,51 @@ default path. For C++ a project may instead pin values in a `cpp:` block in
 `test_command_override`). DETECT FIRST: the adapter only falls back here on genuine
 doubt or an unusual layout the detector gets wrong.
 
+## Layer-1 eval-data sections (used by `python.yml` and `cpp.yml`)
+
+Three **optional** top-level sections ground the self-correction loop in
+observable project behavior rather than the agent's restatement of the request.
+Like the adaptive sections they are optional: an adapter without them (e.g. a
+stub) simply offers no golden/characterization/invariant signal and the loop
+falls back to the differential delta. When present they preserve the base shape.
+The off-model runners that consume them ship in `.apia/scripts/evaldata.py`
+(Layer 1: `harvest_characterization`, `mine_golden`/`compare_artifact`,
+`run_invariants`, `differential_artifacts`, `assemble_eval_data`) and are driven
+by the Layer-2 loop in `.apia/scripts/evalloop.py`; both are off-model and make no
+network/LLM calls. The loop prefers the highest-trust signal in the order
+`characterization > golden > invariant > differential` (see
+`.apia/config.yml` `eval_data.trust_order`).
+
+### `golden`
+
+A committed golden-file comparison: the project treats the artifacts it produces
+as the correctness truth, and the loop diffs freshly produced artifacts against a
+committed golden tree.
+
+| Sub-key | Type | Meaning |
+|---|---|---|
+| `artifact_glob` | list[string] | Globs (relative to repo root) for produced artifacts the project treats as correct output. Scope these to the project's **produced-output directory** (e.g. `out/**/*.json`) rather than the whole tree, so mining never sweeps generated build output (a CMake `build/` tree emits tool `*.json` such as `compile_commands.json`/`Labels.json` that have no golden counterpart). Empty when the stack mines no golden artifacts. |
+| `golden_dir` | string / null | Committed golden tree holding the known-good copies of those artifacts. The produced (non-golden) artifacts live in a gitignored path; only the sources and this committed golden tree are tracked. `mine_golden` compares each produced artifact against the same-named file under `golden_dir`, skipping the golden tree itself. |
+| `compare` | string \| map | How to compare produced vs. golden: `bytes` \| `text` \| `json`. Default is the language-neutral `bytes` (exact match); `text` normalizes line endings; `json` compares parsed structure. May be a single global string applied to every glob, OR a **per-glob mapping** `{glob: mode, ..., default: mode}` so a block whose `artifact_glob` mixes artifact kinds (e.g. `*.json` + `*.csv`) grades each kind under a mode valid for it; a glob with no entry falls back to the mapping's `default` (else `bytes`). `mine_golden` resolves the mode per matched glob. |
+
+### `characterization`
+
+Pins the **current observed behavior** before modifying legacy code.
+
+| Sub-key | Type | Meaning |
+|---|---|---|
+| `capture_command` | string / null | Command that runs the existing code and prints deterministic output to stdout; the captured output becomes the characterization baseline. `null` when the adapter has no generic capture command. |
+
+### `invariants`
+
+Built-in structural properties that must always hold regardless of the specific
+request.
+
+| Sub-key | Type | Meaning |
+|---|---|---|
+| `description` | string | Human-readable rule. |
+| `checks` | list[string] | Built-in invariant ids the Layer-1 invariant runner recognizes (e.g. `row_count_matches_input`, `no_nans`, `roundtrip_identity`); unknown ids are ignored. |
+
 ## Contract notes
 
 - The **base** keys are **always present**; stub values are `null` (or a

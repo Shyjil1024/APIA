@@ -60,3 +60,58 @@ extensions:
 frameworks:
   - pytest
   - unittest
+
+# ---------------------------------------------------------------------------
+# OPTIONAL Layer-1 eval-data sections. These ground the self-correction loop in
+# observable project behavior (not the agent's restatement of the request). They
+# are OPTIONAL: an adapter without them simply offers no golden/characterization/
+# invariant signal and the loop falls back to the differential delta. The runners
+# that consume these keys land in a later feature; this adapter only declares the
+# shape. See .apia/adapters/README.md for the schema.
+# ---------------------------------------------------------------------------
+
+# golden: committed golden-file comparison. The project treats the artifacts it
+# produces (e.g. a generated CSV/JSON report) as the correctness truth; the loop
+# diffs freshly produced artifacts against a committed golden tree.
+golden:
+  # Globs (relative to repo root) for produced artifacts the project treats as
+  # correct output. Scoped to a conventional produced-output directory (out/)
+  # so the mining targets the artifacts the project emits on purpose rather than
+  # sweeping incidental *.json/*.csv elsewhere in the tree. Empty when the stack
+  # has no golden artifacts to mine.
+  artifact_glob:
+    - "out/**/*.json"
+    - "out/**/*.csv"
+  # Committed golden tree holding the known-good copies of those artifacts. The
+  # sample producer (samples/pyapp/calc/report.py) emits out/report.json and
+  # out/table.csv and this tree holds the goldens (FEAT-004).
+  golden_dir: "tests/golden"
+  # How to compare produced vs. golden: bytes | text | json. `compare` may be a
+  # single global string OR a PER-GLOB mapping (glob -> mode) when one block
+  # mixes artifact kinds, so each kind is graded under a mode that is valid for
+  # it. Here the JSON report is compared as structure (`json`, key-order and
+  # whitespace insensitive) and the CSV table as newline-normalized `text`; a
+  # single global mode cannot satisfy both (a CSV is not valid JSON). Globs with
+  # no entry fall back to `default` (the language-neutral `bytes`). See
+  # .apia/adapters/README.md for the schema.
+  compare:
+    "out/**/*.json": json
+    "out/**/*.csv": text
+    default: bytes
+
+# characterization: pin the CURRENT observed behavior before modifying legacy
+# code. `capture_command` runs the existing code and prints deterministic output
+# to stdout; the captured output becomes the characterization baseline. null when
+# the adapter has no generic capture command.
+characterization:
+  capture_command: null
+
+# invariants: built-in structural properties that must always hold regardless of
+# the specific request. The Layer-1 invariant runner recognizes the ids listed
+# under `checks`; unknown ids are ignored.
+invariants:
+  description: "Structural properties the output must always satisfy."
+  checks:
+    - row_count_matches_input
+    - no_nans
+    - roundtrip_identity

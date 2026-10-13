@@ -19,6 +19,13 @@ int subtract(int a, int b);
 // Throws std::invalid_argument if b is zero.
 int divide(int a, int b);
 
+// Return the product of two numbers.
+//
+// APIA worked-example NEW behavior (FEAT-004): added alongside the C++ Layer-1
+// artifact producer (src/report_main.cpp), the C++ counterpart of pyapp's
+// calc.operations.multiply. Covered by tests/test_mathops.cpp.
+int multiply(int a, int b);
+
 }  // namespace mathops
 
 #endif  // CPPAPP_MATHOPS_H

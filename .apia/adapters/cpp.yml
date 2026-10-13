@@ -161,6 +161,55 @@ test_frameworks:
     zero_tests_signal: "Total tests: 0"
 
 # ---------------------------------------------------------------------------
+# OPTIONAL Layer-1 eval-data sections. These ground the self-correction loop in
+# observable project behavior (not the agent's restatement of the request). They
+# are OPTIONAL: an adapter without them simply offers no golden/characterization/
+# invariant signal and the loop falls back to the differential delta. The runners
+# that consume these keys land in a later feature; this adapter only declares the
+# shape. See .apia/adapters/README.md for the schema.
+# ---------------------------------------------------------------------------
+
+# golden: committed golden-file comparison. The project treats the artifacts it
+# produces (e.g. a generated report or rendered image) as the correctness truth;
+# the loop diffs freshly produced artifacts against a committed golden tree.
+golden:
+  # Globs (relative to repo root) for produced artifacts the project treats as
+  # correct output. Scoped to a conventional produced-output directory (out/)
+  # so the mining never sweeps the generated CMake build tree (build/ holds
+  # tool-emitted *.json such as compile_commands.json / Labels.json that have no
+  # golden counterpart). Empty when the stack has no golden artifacts to mine.
+  artifact_glob:
+    - "out/**/*.json"
+    - "out/**/*.csv"
+    - "out/**/*.png"
+  # Committed golden tree holding the known-good copies of those artifacts. The
+  # sample producer (samples/cppapp/src/report_main.cpp) emits out/report.json
+  # and this tree holds the byte-exact golden (FEAT-004).
+  golden_dir: "tests/golden"
+  # How to compare produced vs. golden: bytes | text | json. Default is the
+  # language-neutral `bytes` (exact match), which suits binary artifacts (e.g.
+  # a rendered .png); `text` normalizes line endings; `json` compares structure.
+  compare: bytes
+
+# characterization: pin the CURRENT observed behavior before modifying legacy
+# code. `capture_command` runs the existing code and prints deterministic output
+# to stdout; the captured output becomes the characterization baseline. null when
+# the adapter has no generic capture command (the C++ default: behavior is pinned
+# via GoogleTest/CTest rather than a stdout capture).
+characterization:
+  capture_command: null
+
+# invariants: built-in structural properties that must always hold regardless of
+# the specific request. The Layer-1 invariant runner recognizes the ids listed
+# under `checks`; unknown ids are ignored.
+invariants:
+  description: "Structural properties the output must always satisfy."
+  checks:
+    - row_count_matches_input
+    - no_nans
+    - roundtrip_identity
+
+# ---------------------------------------------------------------------------
 # OPTIONAL per-project override (FALLBACK, not a requirement).
 #
 # DETECT FIRST: APIA detects the build system, framework, and config above and

@@ -71,6 +71,13 @@ try:
 except ImportError:
     ingest = None
 
+# evalloop.py ships the Layer-2 self-correction loop machinery (one deterministic
+# verifier cycle, the hard max_iterations cap, the token-budget advisory, the
+# acceptance-criteria confirmation gate). It is imported LAZILY inside the
+# --iterate CLI path (see main()) so a plain verify() run never pays for it and so
+# verify.py has no hard import cycle (evalloop imports verify). Like ingest, it is
+# a LOCAL stdlib-only module that performs no network/LLM calls.
+
 
 # Signal that pytest prints when it collects zero tests (mirrors the adapter's
 # no_tests_detection.zero_tests_signal). Used to classify an "empty" run.
@@ -1045,6 +1052,52 @@ def format_human(summary):
     return "\n".join(lines)
 
 
+def _format_iterate_human(decision, emit_report=False):
+    """Render a compact human summary of an evalloop.evaluate() decision.
+
+    Prints the status (GREEN / NEEDS FIX / STOP / NEEDS CONFIRMATION), the
+    iteration counter against the hard cap, the token-budget advisory, and -- when
+    ``emit_report`` is set and a structured failure report exists -- the
+    JSON-serializable failure report a model would consume. This is the
+    DETERMINISTIC machinery's output only; the model fix is a LIVE Copilot step.
+    """
+    status = decision.get("status")
+    cap = decision.get("max_iterations")
+    it = decision.get("iteration")
+    lines = ["APIA iterate :: one deterministic self-correction cycle"]
+    lines.append("  iteration {} / cap {}".format(it, cap))
+
+    advisory = decision.get("budget_advisory")
+    if advisory:
+        state = "within budget" if advisory.get("within_budget") else "OVER BUDGET"
+        lines.append("  token budget: ~{} tokens vs {} ({})".format(
+            advisory.get("estimated_tokens"), advisory.get("budget"), state))
+        if advisory.get("warning"):
+            lines.append("  advisory: {}".format(advisory["warning"]))
+
+    if status == "green":
+        lines.append("  => GREEN (cycle passed; the loop stops immediately)")
+    elif status == "needs_confirmation":
+        lines.append("  => NEEDS CONFIRMATION (anti-circularity gate)")
+        lines.append("  ask: {}".format(decision.get("ask")))
+    elif status == "stop":
+        lines.append("  => STOP ({}) -- the loop will NOT auto-apply a broken "
+                     "change".format(decision.get("reason")))
+        lines.append("  ask: {}".format(decision.get("ask")))
+    else:  # needs_fix
+        lines.append("  => NEEDS FIX (hand the structured failure to the live "
+                     "model, then re-run the next cycle)")
+
+    report = decision.get("failure_report")
+    if emit_report:
+        if report is not None:
+            lines.append("  --- structured failure report (model-consumable) ---")
+            lines.append(json.dumps(report, indent=2, sort_keys=True, default=str))
+        elif status == "green":
+            lines.append("  --- no failure report: cycle is GREEN ---")
+    return "\n".join(lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
@@ -1111,6 +1164,32 @@ def main(argv=None):
         action="store_true",
         help="Emit the machine-readable JSON summary (in addition to the human one).",
     )
+    parser.add_argument(
+        "--iterate",
+        action="store_true",
+        help="Run ONE deterministic Layer-2 self-correction CYCLE (assemble "
+             "Layer-1 eval data -> run the verify phases -> decide green/stop/ask) "
+             "and print the result. This runs the DETERMINISTIC machinery only; "
+             "the model fix between cycles is a LIVE Copilot action, never done "
+             "here. Honors the hard max_iterations cap and the token-budget "
+             "advisory from .apia/config.yml.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=int,
+        default=None,
+        help="Override the hard max_iterations cap for an --iterate run (default: "
+             "the config.yml value). Lets a headless proof drive the cap "
+             "deterministically; the loop is ALWAYS bounded by it.",
+    )
+    parser.add_argument(
+        "--emit-failure-report",
+        dest="emit_failure_report",
+        action="store_true",
+        help="With --iterate, print the STRUCTURED, JSON-serializable failure "
+             "report a model would consume (or GREEN) plus the stop/ask decision.",
+    )
     args = parser.parse_args(argv)
 
     # --doctor: shared offline preflight. A repo_path is OPTIONAL but, when a
@@ -1153,6 +1232,36 @@ def main(argv=None):
         missing = preflight_missing_tool(plan)
         if missing:
             parser.error(missing + " (run 'verify.py --doctor' for details)")
+
+    # --iterate: run ONE deterministic Layer-2 self-correction cycle via the
+    # evalloop machinery and report green/stop/ask + the structured failure
+    # report. This is the headless proof surface for the loop; the model fix
+    # between cycles is a LIVE Copilot action, never performed here. evalloop is
+    # imported lazily so a plain verify() run never pays for it and there is no
+    # hard import cycle (evalloop imports verify).
+    if args.iterate:
+        try:
+            import evalloop  # noqa: E402  (lazy; Layer-2 loop machinery)
+        except ImportError as exc:
+            parser.error("iterate machinery unavailable: {}".format(exc))
+        adapter = load_adapter(args.adapter or default_adapter_path())
+        iterate_options = {
+            "adapter_path": args.adapter,
+            "new_tests": args.new_tests,
+            "baseline_file": args.baseline_file,
+            "build_only": args.build_only,
+            "max_iterations": args.max_iterations,
+        }
+        try:
+            decision = evalloop.evaluate(args.repo_path, adapter, iterate_options)
+        except StubAdapterError as exc:
+            parser.error(str(exc))
+        print(_format_iterate_human(decision, emit_report=args.emit_failure_report))
+        if args.json:
+            print(json.dumps(decision, indent=2, sort_keys=True, default=str))
+        # Exit 0 only when the single cycle is green; a needs_fix/stop/
+        # needs_confirmation decision exits non-zero so a proof can gate on it.
+        return 0 if decision.get("status") == "green" else 1
 
     try:
         summary = verify(

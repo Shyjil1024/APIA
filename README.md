@@ -23,6 +23,13 @@ waits for you.
   clarifying questions instead of guessing. See `docs/ARCHITECTURE.md` section 6.
 - **Legacy-aware.** Handles projects with no tests by generating characterization
   tests that pin current behavior before any change.
+- **Grounded iterate-to-green (Layer 1 + Layer 2).** Verification grades changes
+  against repo-derived eval data (characterization > golden > invariant >
+  differential), and a bounded self-correction loop iterates to green under a hard
+  `max_iterations` cap. The verifier is **deterministic tooling, never a second
+  model**; the off-model scripts call no model and the fix step is your live Copilot
+  session only. New-behavior acceptance criteria need one human confirmation (the
+  anti-circularity gate). See `docs/ARCHITECTURE.md` sections 3a-3c.
 - **Portable.** Degrades gracefully by host capability (Tier 0/1/2). See
   `docs/PORTABILITY.md`.
 

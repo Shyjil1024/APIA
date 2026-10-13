@@ -12,6 +12,12 @@ samples/**/build/
 CMakeCache.txt
 CMakeFiles/
 
+# PRODUCED (non-golden) Layer-1 artifacts emitted by the sample producers. Only
+# the SOURCES and the committed golden trees (samples/**/tests/golden/) are
+# tracked; the freshly produced artifacts the loop diffs against them are
+# regenerated on demand and never committed (FEAT-004).
+samples/**/out/
+
 # NOTE: .apia/knowledge/ is intentionally NOT ignored. The cached project
 # knowledge base is committed so it is shared across the team and survives
 # sessions (see docs/ARCHITECTURE.md section 1).

@@ -32,6 +32,32 @@ Each `->` is a human-approval **GATE**.
 
 Any stage may bounce back to CLARIFY when new uncertainty appears.
 
+## Iterative self-correction (inside TEST/APPLY, single agent)
+
+Converge on grounded eval data instead of guessing. This runs on THIS session as a
+single Tier-0 agent (no Tier-2 needed), so it works on VS 2022:
+
+1. **Assemble repo-derived eval data (Layer 1).** Ground truth comes from the code,
+   in trust order **characterization > golden > invariant > differential** (pin
+   current behavior > committed golden-file compare > built-in structural checks >
+   delta vs. the saved baseline). Prefer the highest-trust signal available.
+2. **Acceptance-criteria confirmation GATE (anti-circularity).** For NEW behavior the
+   code does not yet exhibit, propose acceptance criteria and get **ONE human
+   confirmation** before trusting them. The same model must not both write the code
+   and silently invent the test it grades itself against.
+3. **Generate the change**, then **run the deterministic verifier** (`verify.py`;
+   tests/build/diff/golden, never another model).
+4. **On failure, feed the exact structured failure back** into this session and fix,
+   then re-run. Repeat until **green** OR the hard `max_iterations` cap in
+   `.apia/config.yml` is reached, then **STOP and ask a specific question**. The
+   per-iteration `token_budget.iterate` is an advisory ceiling.
+5. **Never silently apply a broken change; never loop forever.** APPLY still gates on
+   the human. Drive one cycle headless with `verify.py --iterate [--max-iterations N]
+   --emit-failure-report`.
+
+The verifier is **deterministic tooling, not a second model**, and the off-model
+scripts call no model; the fix step is this live Copilot session only.
+
 ## Anti-hallucination (clarify) rule
 
 If your confidence in understanding the request is below the `confidence_threshold`
@@ -67,8 +93,7 @@ Detect the stack from manifests/extensions.
   `.apia/knowledge/` so facts are not re-asked.
 - **build-only phase:** `verify.py --build-only` compiles without running tests (the only
   regression signal when a C++ project has no tests).
-- **dry-run:** `verify.py --dry-run` prints the planned build/test commands + reasoning and
-  writes nothing. See prompts/skills for detail.
+- **dry-run:** `verify.py --dry-run` prints the planned commands + reasoning, writes nothing.
 
 ## Local only
 
@@ -78,5 +103,6 @@ CI/CD/packaging/signing. The user pushes manually.
 ## Where the detail lives (load on demand)
 
 - Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`.
-- Prompts: `/apia-ingest`, `/apia-feature`, `/apia-clarify`, `/apia-test`, `/apia-apply`.
+- Prompts: `/apia-ingest`, `/apia-feature`, `/apia-clarify`, `/apia-test`, `/apia-apply`,
+  `/apia-iterate`.
 - Agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test).

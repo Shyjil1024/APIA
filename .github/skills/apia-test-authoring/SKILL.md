@@ -43,6 +43,44 @@ stage runs in a **forked context** for token isolation.
 
 7. **STOP at the gate** for the user to review results before APPLY.
 
+## Layer-1 eval data (repo-derived ground truth)
+
+Verification is grounded in observable project behavior, never in the model's own
+restatement of the request. The adapter may declare three optional Layer-1 sources,
+consumed in trust order **characterization > golden > invariant > differential** (prefer
+the highest-trust signal available):
+
+- **characterization** (`characterization.capture_command`) - runs the existing code and
+  freezes its deterministic stdout as the baseline; the most trustworthy signal because
+  it is the real output of the real code.
+- **golden** (`golden.artifact_glob` / `golden_dir` / `compare`) - the project treats the
+  artifacts it produces as the correctness truth; the loop diffs freshly produced
+  artifacts against a committed golden tree. `compare` is `bytes` (default, exact),
+  `text` (newline-normalized), or `json` (parsed structure). Scope `artifact_glob` to the
+  produced-output directory (e.g. `out/**/*.json`) so mining never sweeps generated build
+  output.
+- **invariant** (`invariants.checks`) - built-in structural properties that must always
+  hold: `row_count_matches_input`, `no_nans`, `roundtrip_identity`.
+- **differential** - the delta against the saved baseline (regressions vs. new),
+  persisted via `--baseline-only` / `.apia-baseline.json`.
+
+## Acceptance-criteria confirmation gate (anti-circularity)
+
+For acceptance criteria that describe **NEW** behavior the code does not yet exhibit, the
+loop requires **ONE human confirmation** before treating them as truth
+(`eval_data.acceptance_criteria_gate` in `.apia/config.yml`). The same model must not both
+write the code and invent the test it grades itself against.
+
+## Iterate to green (Layer-2), deterministic verifier vs. live model fix
+
+A verified change may **iterate to green** under the hard `max_iterations` cap (see
+`/apia-iterate`): assemble Layer-1 eval data -> run the deterministic verifier -> on
+failure feed the structured failure back and fix -> re-run -> repeat until green OR the
+cap, then **STOP and ask**. Keep this separation strict: the **verifier is deterministic
+tooling** (tests/build/diff/golden) and the off-model scripts call **no model**; the
+**fix step is this live Copilot session only**. Never silently apply a broken change and
+never loop forever - the cap is a hard stop and APPLY still gates on the human.
+
 ## Scriptable harness (same commands, no model needed)
 
 The off-model harness `.apia/scripts/verify.py` runs exactly these phases through

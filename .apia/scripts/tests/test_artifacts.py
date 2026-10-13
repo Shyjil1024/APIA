@@ -39,6 +39,7 @@ EXPECTED_PROMPTS = {
     "apia-clarify",
     "apia-test",
     "apia-apply",
+    "apia-iterate",
 }
 
 
