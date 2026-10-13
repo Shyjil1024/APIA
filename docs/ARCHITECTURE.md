@@ -402,6 +402,105 @@ interface is structured now, the full **fusion is DEFERRED** (see section 7).
 
 ---
 
+## 3e. Greenfield generation (Phase 3) and its two-tier honest verification
+
+APIA generates a **working, tested, runnable** Python **or** C++ project from an
+**approved** spec. Like every other capability it splits into an **off-model engine**
+and a **model-facing step**, and it reuses the SAME composable gate from section 3d:
+the off-model generation engine (`.apia/scripts/scaffold.py`) does only deterministic
+work (shape detection, skeleton emission, build/run/test normalization, the gate
+decision), and the LIVE Copilot session writes the feature code. `scaffold.py` makes
+**zero network and zero LLM calls** (the same hard constraint as `ingest.py` /
+`verify.py` / `scan.py`; a static guard test enforces it) and spawns **no subprocess
+of its own** - every build/test run routes through `verify.py`'s existing single
+`_run()` chokepoint.
+
+### The two tiers
+
+- **Tier 1 - generic shape generation (deterministic).** From an approved spec,
+  `detect_shape` maps the request to a fixed project **shape**, and `emit_skeleton`
+  writes the idiomatic base layout + build file (`pyproject.toml` / `CMakeLists.txt`),
+  the package/source layout, a runnable entrypoint stub, and a `tests/` smoke test.
+  Emission is deterministic and idempotent (re-emitting is byte-identical) and never
+  invents feature logic.
+- **Tier 2 - verified "it actually runs" (honest).** `verify_generated` drives
+  **build -> run/smoke -> unit tests** through `verify.py`'s machinery and normalizes
+  the result into the shared counts shape. For a **fully-verifiable** shape the
+  generated project must BUILD (C++), run its unit tests, and be **all-green**. For a
+  shape that inherently cannot be auto-verified in a headless environment the result is
+  reported **honest-partial** and **never green** (see the matrix below).
+
+### Shape detection
+
+`detect_shape(spec)` maps an approved structured spec to one of the supported shapes
+(an explicit `shape` wins; otherwise `stack` + `kind`/`target` hints and keyword probes
+decide, honest-partial shapes checked first so a GUI intent is not mis-read as a plain
+CLI). It **never guesses silently**: an ambiguous spec still returns a best-effort shape
+but marks `confidence: "low"` and records why in `reasons`, so the LIVE clarify gate (the
+model's job, not the script's) can ask. The authoritative shape list lives in
+`.apia/config.yml` under `generate.supported_shapes` (resolved REPO-FIRST), with a
+built-in fallback.
+
+### Shape -> verification matrix
+
+| Shape | Stack | Tier | What is auto-verified | Why / what a human still checks |
+|---|---|---|---|---|
+| `python_cli` | Python | full | import + run the `python -m <name>` entrypoint + unit tests all green | fully deterministic |
+| `python_library` | Python | full | import the package + unit tests all green | fully deterministic |
+| `python_web_api` | Python | full | the health/route handlers served + exercised via the framework test client (no live socket) + unit tests all green | fully deterministic; a real network deployment is still a human/CD step |
+| `cpp_console` | C++ | full | CMake build (GoogleTest via FetchContent) + the console target links + CTest unit tests all green | fully deterministic |
+| `cpp_library` | C++ | full | CMake build + the library target links + CTest unit tests all green | fully deterministic |
+| `gui` | Py/C++ | honest-partial | skeleton builds/compiles + unit tests run | window/widget/user interaction cannot be auto-verified without a human at a display |
+| `embedded` | C++ | honest-partial | skeleton builds/compiles + unit tests run | on-device behavior needs the target hardware/emulator |
+| `driver` | C++ | honest-partial | skeleton builds/compiles + unit tests run | driver load/runtime needs the target kernel/privileges |
+
+An honest-partial shape emits a plain-language `PARTIAL.md` naming what a human must
+still check, and `verify_generated` returns `partial: True`, `ok: False`, and a
+non-empty `unverified_aspects` list. **A faked green is impossible for these shapes.**
+
+### The generation gate (reuses the Phase-2 reviewer + the eval loop)
+
+The gate adds **no new knobs**. Each generated increment passes through:
+
+1. **The reviewer severity gate** - `generation_gate(findings)` calls the SAME
+   `scan.apply_thresholds` against the SAME `review.thresholds` from `.apia/config.yml`
+   (section 3d). The generator gets no weaker a bar than a human-authored change.
+2. **The eval loop** - `decide_generation` reuses `evalloop.resolve_max_iterations`
+   (the HARD `max_iterations` cap) so a persistently-red generation **iterates then
+   STOPS** at the cap with a specific ask, never looping forever and never silently
+   shipping a broken increment.
+3. **The anti-circularity acceptance gate** - `decide_generation` reuses
+   `evalloop.propose_acceptance_criteria` / `acceptance_criteria_confirmed`
+   (section 3c): acceptance criteria describing NEW behavior the code does not yet
+   exhibit must be **human-confirmed** before the loop grades the generation against
+   them (it returns `status: "ask"` until then).
+
+### The honest definition of "done"
+
+"Any Python/C++ project from one prompt" is delivered **honestly**, not as a
+one-sentence-to-flawless-production claim. The real flow is:
+
+```
+prompt -> ONE batched clarify -> approved spec -> generated, TESTED, RUNNABLE
+          skeleton + core features -> human checkpoints (spec approval, acceptance
+          criteria, apply)
+```
+
+That is **minimal, well-placed human input - not zero interaction**, and the Tier-2
+shapes are plainly reported partial rather than overclaimed. The generator rides the
+user's Copilot session (no external LLM), stays token-efficient (the off-model engine
+does the mechanical work for free), and stays **strictly local** (no auto-push/PR/CI).
+
+### Deferred (clearly labeled)
+
+The following remain **DEFERRED** (see section 7): `apia-orchestrator` full task-graph
+autonomy; the full iterate-to-best threshold tuning/fusion into `evalloop.py`; the
+**C#/Groovy** adapters to parity; concrete **MCP data sources**; auto-push/PR/MR/CI
+integration; the VS Code **marketplace extension**; and cross-team/org knowledge &
+capability sharing + plugins.
+
+---
+
 ## 4. Component inventory (what ships in the package)
 
 ```
@@ -416,6 +515,7 @@ interface is structured now, the full **fusion is DEFERRED** (see section 7).
       apia-apply.prompt.md
       apia-iterate.prompt.md
       apia-review.prompt.md          # Tier 1: drives the read-only reviewer (VS 2022-safe)
+      apia-new.prompt.md             # Tier 1: drives greenfield generation (VS 2022-safe)
     skills/                          # Tier 2: rich, token-efficient skills (VS Code host)
       apia-ingest/SKILL.md           # context: fork
       apia-feature-loop/SKILL.md
@@ -424,21 +524,30 @@ interface is structured now, the full **fusion is DEFERRED** (see section 7).
       apia-quality-scan/SKILL.md     # context: fork  (reviewer scan skill)
       apia-perf-scan/SKILL.md        # context: fork  (reviewer scan skill)
       apia-limitations/SKILL.md      # context: fork  (model synthesis over findings + KB)
+      apia-scaffold/SKILL.md         # context: fork  (generation: detect shape + emit skeleton)
+      apia-e2e-verify/SKILL.md       # context: fork  (generation: build+run+test + gate)
     agents/                          # Tier 2: per-stage custom agents + handoffs (approval gates)
       apia-planner.agent.md          # read-only tools
       apia-implementer.agent.md      # edit tools
       apia-tester.agent.md           # test/terminal tools
       apia-reviewer.agent.md         # read-only tools (runs scan.py, summarizes findings)
+      apia-architect.agent.md        # generation: drives scaffold.py (shape -> skeleton -> verify -> gate)
   .apia/
     knowledge/                       # cached, committed project knowledge base
-    config.yml                       # token budget, max_iterations cap, eval_data policy, review thresholds
+    config.yml                       # token budget, max_iterations cap, eval_data policy, review thresholds, generate.supported_shapes
     scripts/                         # off-model preprocessing + eval machinery (no model calls)
       ingest.py                      #   static indexing / detection / doctor preflight
       verify.py                      #   deterministic verifier + --iterate loop surface
       evaldata.py                    #   Layer 1: grounded eval-data generation
       evalloop.py                    #   Layer 2: iterate-to-green loop + acceptance gate
       scan.py                        #   Reviewer: off-model scanners -> canonical findings + composable gate
-    adapters/                        # per-stack build/test + scanner maps (py + cpp complete; csharp/groovy stubs)
+      scaffold.py                    #   Phase 3: shape detect + skeleton emit + build/run/test normalize + gate
+    adapters/                        # per-stack build/test + scanner + generate maps (py + cpp complete; csharp/groovy stubs)
+  samples/
+    generated/                       # committed generated proof projects (sources only; build/ + out/ gitignored)
+      python_cli/ python_library/ python_web_api/ cpp_console/ cpp_library/   # fully verified
+      gui/                           # honest-partial proof (reports partial, never green)
+      specs/                         # the approved specs each sample was emitted from
   docs/
     ARCHITECTURE.md                  # this document
 ```
@@ -516,11 +625,18 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   the shared `apply_thresholds()` gate are exposed as a **composable interface** so a future
   greenfield-generation gate can reuse them.
 - **DEFERRED - Improvement-opportunity suggestions** grounded in the knowledge base.
-- **DEFERRED - Greenfield generation** (`apia-architect` / `apia-scaffold` / `apia-e2e-verify`): a
-  from-scratch generation flow. The structure is in place but the flow is not built. **The user's
-  requirement is that once it ships, each generated increment passes through the SAME reviewer gates
-  (`scan.py` + `apply_thresholds()`) and the TEST layers before it is accepted** - the generator
-  gets no weaker a bar than a human-authored change.
+- **DELIVERED (Phase 3) - Greenfield generation** (`apia-architect` / `apia-scaffold` /
+  `apia-e2e-verify` / `/apia-new`, backed by the off-model `scaffold.py`): a from-scratch,
+  two-tier, HONEST generation flow for Python and C++ (see section 3e). Each generated increment
+  passes through the SAME reviewer gates (`scan.py` + `apply_thresholds()`) and the TEST layers
+  before it is accepted - the generator gets no weaker a bar than a human-authored change. The
+  **five fully-verifiable shapes** (`python_cli`, `python_library`, `python_web_api`,
+  `cpp_console`, `cpp_library`) are generated, built, run, and unit-tested green end-to-end
+  in-sandbox; the **honest-partial shapes** (`gui`/`embedded`/`driver`) are generated + build-checked
+  + unit-tested and reported PARTIAL, never faked green. Committed proof projects live under
+  `samples/generated/` (see `docs/PROOF.md`). **DEFERRED within Phase 3:** `apia-orchestrator` full
+  task-graph autonomy, the full iterate-to-best threshold tuning/fusion, the C#/Groovy generation
+  adapters, and MCP data sources (listed below).
 - **DEFERRED - `apia-orchestrator` task-graph autonomy**: multi-feature planning/execution as a
   dependency graph.
 - **DEFERRED - Batched-upfront-clarification rework**: ask all clarifying questions once, upfront.

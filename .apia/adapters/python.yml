@@ -158,3 +158,45 @@ invariants:
     - row_count_matches_input
     - no_nans
     - roundtrip_identity
+
+# ---------------------------------------------------------------------------
+# OPTIONAL Phase-3 GENERATION section. These are the minimal DETERMINISTIC
+# emission facts the off-model generation engine (.apia/scripts/scaffold.py)
+# consults when it emits a greenfield project of a given SHAPE. It is OPTIONAL
+# and consistent with the sections above: scaffold.py's _adapter_fragment()
+# reads `generate.templates.<shape>` (a dict per shape) WHEN PRESENT and falls
+# back to its built-in templates otherwise, so an adapter without this section
+# still generates correctly. Copilot writes the feature logic live; this block
+# only records the mechanical facts (build-file template ref / inline skeleton
+# fragment hints, the smoke/run command, and the unit-test template to seed).
+# See .apia/adapters/README.md for the schema.
+generate:
+  templates:
+    python_cli:
+      # Build file emitted for a Python CLI: a stdlib-only pyproject.toml with a
+      # pytest testpaths config (no runtime deps). Fragment hints name the
+      # runnable entrypoint stub + importable package the engine lays down.
+      build_file: pyproject.toml
+      skeleton:
+        - "<name>/__init__.py"           # package marker
+        - "<name>/__main__.py"           # runnable `python -m <name>` entrypoint stub
+      # Smoke/run command: the generated entrypoint is runnable via -m.
+      run_command: "python -m {name}"
+      # Unit-test template seeded under tests/ (imports the entrypoint + asserts
+      # it returns a result). Run via the top-level test_command (pytest).
+      test_template: tests/test_smoke.py
+    python_library:
+      build_file: pyproject.toml
+      skeleton:
+        - "<name>/__init__.py"           # importable package exposing an API stub
+      # Libraries have no run entrypoint; the smoke signal is import + pytest.
+      run_command: "python -c \"import {name}\""
+      test_template: tests/test_smoke.py
+    python_web_api:
+      build_file: pyproject.toml
+      skeleton:
+        - "<name>/__init__.py"
+        - "<name>/app.py"                # framework-agnostic health() smoke handler
+      # Smoke the health handler without a running server (no web dependency).
+      run_command: "python -c \"from {name}.app import health; print(health())\""
+      test_template: tests/test_smoke.py

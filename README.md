@@ -36,8 +36,18 @@ waits for you.
   finding shape, and applies a composable severity gate; the model only summarizes and
   prioritizes the grounded findings - it never invents one, and a missing scanner is
   reported, not faked. The findings report and the shared gate are a **composable
-  interface** a future greenfield-generation gate reuses. See
+  interface** the greenfield-generation gate reuses. See
   `docs/ARCHITECTURE.md` section 3d.
+- **Greenfield generation (Python / C++), two-tier and HONEST.** From one prompt and a
+  single batched clarify, APIA generates a working, **tested, runnable** project: an
+  off-model engine (`.apia/scripts/scaffold.py`) detects the project shape, emits the
+  skeleton, and verifies it end to end. The **five fully-verifiable shapes**
+  (CLI, library, web API, C++ console, C++ library) are built, run, and unit-tested
+  **all-green**; shapes that cannot be auto-verified headless (GUI/embedded/driver) are
+  reported **honest-partial, never a faked green**, with a plain-language note on what you
+  must check. Each generated increment passes the SAME reviewer gate as a human change.
+  It is **local-only** (no auto-push/PR/CI) and runs on **VS 2022 as a single agent**
+  via `/apia-new`. See `docs/ARCHITECTURE.md` section 3e and `docs/PROOF.md`.
 - **Portable.** Degrades gracefully by host capability (Tier 0/1/2). See
   `docs/PORTABILITY.md`.
 
@@ -77,6 +87,11 @@ The `samples/` directory contains two sample Python repos used to prove the loop
   (the regression-guard green baseline).
 - `samples/legacy_pyapp/` - a legacy module with **no tests** (the
   characterization-test path demonstrated in FEAT-004).
+
+The `samples/generated/` directory holds the Phase-3 greenfield-generation proof
+projects (Python CLI/library/web-API, C++ console/library, plus an honest-partial
+`gui`), each generated, built, run, and tested through `scaffold.py`; see
+`docs/PROOF.md` for the executed-vs-fixture split.
 
 Set up the toolchain and run the baselines:
 

@@ -24,6 +24,14 @@ token_budget:
                     # produces grounded findings for free; this budget bounds the
                     # context Copilot consumes to summarize + prioritize them
                     # (and name limitations). Advisory, not a hard stop.
+  generate: 6000    # soft ceiling for the Phase-3 greenfield GENERATION stage's
+                    # model-facing work (write the feature code live for the
+                    # detected shape). The off-model scaffold.py engine does the
+                    # deterministic work for free (shape detection, skeleton/
+                    # build-file emission, build+run+test normalization, gate);
+                    # this budget bounds the context Copilot consumes per
+                    # generation increment. Advisory, not a hard stop; the hard
+                    # stop is max_iterations below.
 
 # max_iterations: HARD cap on the Layer-2 self-correction loop (verifier runs ->
 # model proposes a fix -> re-verify). Iteration exists to AVOID wasted tokens by
@@ -108,6 +116,46 @@ review:
     fail_on_severity: high
     max_findings:
       security: 0
+
+# generate: Phase-3 greenfield PROJECT GENERATION policy. APIA generates a
+# working, tested, runnable Python OR C++ project from an APPROVED spec using a
+# two-tier, HONEST model (never a faked green). The off-model generation engine
+# (.apia/scripts/scaffold.py) reads `supported_shapes` below REPO-FIRST (the
+# target repo's own .apia/config.yml wins, then this package config), falling
+# back to its built-in default only when the key is absent -- so this block is
+# the AUTHORITATIVE source of the detectable shapes. The shape names must match
+# the ids scaffold.py uses exactly.
+#
+# supported_shapes is split into two tiers so "any Python/C++ project" is honest:
+#   TIER 1 -- fully-verifiable: python_cli, python_library, python_web_api,
+#             cpp_console, cpp_library. These are deterministically built + run +
+#             unit-tested end-to-end; the increment must go all-green.
+#   TIER 2 -- honest-partial: gui, embedded, driver. These are recognized and
+#             emitted (skeleton + build/compile check + unit tests) but CANNOT be
+#             auto-verified in a headless environment (no display / no target
+#             hardware / no privileged kernel). They are reported PARTIAL and
+#             NEVER faked green; a plain-language PARTIAL.md names what a human
+#             must still check.
+#
+# The generation GATE is COMPOSABLE and reuses existing policy -- it adds NO new
+# knobs here on purpose:
+#   * the severity gate reuses `review.thresholds` above (scaffold.generation_gate
+#     calls the SAME scan.apply_thresholds; do NOT add a second thresholds block);
+#   * the iterate cap reuses `max_iterations` above (every generation increment
+#     passes through the eval/test loop, bounded by that hard cap);
+#   * the anti-circularity gate reuses `eval_data.acceptance_criteria_gate`.
+generate:
+  supported_shapes:
+    # TIER 1 -- fully build+run+test verified (must go all-green).
+    - python_cli
+    - python_library
+    - python_web_api
+    - cpp_console
+    - cpp_library
+    # TIER 2 -- generated-but-honestly-partial-verified (never faked green).
+    - gui
+    - embedded
+    - driver
 
 # cpp: OPTIONAL per-project C++ overrides (a FALLBACK, never required). APIA
 # detects the build system, test framework, and config first (see

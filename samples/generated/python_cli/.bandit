@@ -1,0 +1,6 @@
+# Bandit config for the generated project. B101 (assert_used) is skipped because
+# pytest tests use bare `assert` by design; this is the standard bandit setting
+# for a pytest-based project, not a weakening of the security gate (real
+# vulnerabilities such as B602/B105 are still reported and still fail the gate).
+[bandit]
+skips = B101
