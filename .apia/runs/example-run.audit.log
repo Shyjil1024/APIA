@@ -1,0 +1,16 @@
+APIA orchestrator run audit
+  run_id : run-example
+  goal   : add a rounding option to the pyapp calculator report
+  status : done
+
+2026-10-13T13:56:34Z  graph_built       [-]  validated graph of 3 task(s); global_max_tasks=20, per_task_max_iterations=3
+2026-10-13T13:56:34Z  task_ready        [ingest-pyapp]
+2026-10-13T13:56:34Z  task_running      [ingest-pyapp]
+2026-10-13T13:56:34Z  task_done         [ingest-pyapp]
+2026-10-13T13:56:34Z  task_ready        [code-on-pyapp]
+2026-10-13T13:56:34Z  task_running      [code-on-pyapp]
+2026-10-13T13:56:34Z  task_done         [code-on-pyapp]
+2026-10-13T13:56:34Z  task_ready        [review-pyapp]
+2026-10-13T13:56:34Z  task_running      [review-pyapp]
+2026-10-13T13:56:34Z  task_done         [review-pyapp]
+2026-10-13T13:56:34Z  run_done          [-]  all 3 task(s) done

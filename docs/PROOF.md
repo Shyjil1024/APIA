@@ -579,6 +579,183 @@ These RUN and pass in this sandbox.
 
 ---
 
+## Orchestrator proof (Phase 4 task-graph autonomy)
+
+The orchestrator is proven the same way as the loop and the generator: the off-model
+engine `.apia/scripts/orchestrate.py` runs the deterministic task-graph / run-state /
+resume / stop machinery, and the per-task LLM work is a LIVE Copilot action the script
+never performs. `orchestrate.py` makes **zero LLM and zero network calls** and spawns
+**no subprocess of its own** (a static guard test in `test_orchestrate.py` enforces it,
+mirroring `test_scan` / `test_scaffold`); any build/test run reaches `verify.py`'s single
+`_run()` chokepoint only indirectly through the engines it composes.
+
+### Executed in-sandbox vs. worked-example (read this first)
+
+Mirroring the executed-vs-fixture discipline of the Layer-1/Layer-2 and Reviewer
+sections above, this section is explicit about what was run for real.
+
+- **EXECUTED for real in this sandbox** (the deterministic machinery, driven across
+  **separate `orchestrate.py` process invocations** so persistence/resume is genuine):
+  graph **build + validate**, **cycle detection** (a cyclic graph is rejected), the
+  **topological / ready-frontier** selection, **dependency unblocking** on a `done`
+  transition, **persist -> stop -> resume** across separate processes (a fresh process
+  reads the saved frontier and continues), the **global-cap stop** condition, and the
+  **failed-task-halts-with-a-specific-ask** case (dependents left blocked, non-zero exit).
+- **WORKED-EXAMPLE (not executed by the script)**: the per-task LLM reasoning /
+  generation / fix / review steps. Each task's `result` verdict in the run-state is a
+  worked-example record of a live stage (the same approach prior phases used for the
+  model half). **Real model execution only happens in a live Copilot session**; the
+  engine routes and records the verdict, it never produces it.
+
+The committed example lives at `.apia/runs/example-run.json` (run-state) +
+`.apia/runs/example-run.audit.log` (rendered audit trail), built from the 3-task graph in
+`.apia/runs/example-tasks.json` (`ingest-pyapp -> code-on-pyapp -> review-pyapp`).
+
+### Build + validate + initial run-state (invocation 1)
+
+```bash
+.venv/bin/python .apia/scripts/orchestrate.py --init \
+    "add a rounding option to the pyapp calculator report" \
+    --tasks .apia/runs/example-tasks.json --run-state .apia/runs/example-run.json \
+    --run-id run-example
+```
+
+```
+run run-example => running
+  ready: ['ingest-pyapp']
+  pending: ['ingest-pyapp', 'code-on-pyapp', 'review-pyapp']
+  recent audit:
+    ... graph_built [-] validated graph of 3 task(s); global_max_tasks=20, per_task_max_iterations=3
+    ... task_ready [ingest-pyapp]
+```
+
+Only `ingest-pyapp` is ready (its deps are satisfied); the two dependents wait. Note the
+run captures the resolved bounds: the global cap (20) and the **REUSED** per-task cap
+(`per_task_max_iterations=3`, read from the same `max_iterations` in `.apia/config.yml`).
+
+### Transition + dependency unblocking (invocations 2-3)
+
+```bash
+.venv/bin/python .apia/scripts/orchestrate.py --step --run-state .apia/runs/example-run.json --task-id ingest-pyapp --to running
+.venv/bin/python .apia/scripts/orchestrate.py --step --run-state .apia/runs/example-run.json --task-id ingest-pyapp --to done --result .proof/ingest-result.json
+```
+
+The `done` transition unblocks the dependent (`code-on-pyapp` becomes ready):
+
+```
+run run-example => running
+  ready: ['code-on-pyapp']
+  pending: ['code-on-pyapp', 'review-pyapp']
+  done: ['ingest-pyapp']
+  recent audit:
+    ... task_done [ingest-pyapp]
+    ... task_ready [code-on-pyapp]
+```
+
+(`--to` is the alias for `--status-value`; argparse reserves `--status` for the status
+action.)
+
+### Persist -> stop -> resume across separate processes (invocation 4)
+
+Stop here (the session ends). A **fresh** `orchestrate.py` process -- nothing carried over
+in memory -- reads the saved run-state and continues from the saved frontier:
+
+```bash
+.venv/bin/python .apia/scripts/orchestrate.py --status --run-state .apia/runs/example-run.json
+```
+
+```
+run run-example => running
+  ready: ['code-on-pyapp']
+  done: ['ingest-pyapp']
+```
+
+The frontier is exactly where the previous process left it. Driving the remaining tasks
+(`code-on-pyapp` then `review-pyapp`, each running -> done) completes the run:
+
+```
+run run-example => done
+  done: ['ingest-pyapp', 'code-on-pyapp', 'review-pyapp']
+  recent audit:
+    ... task_done [review-pyapp]
+    ... run_done [-] all 3 task(s) done
+```
+
+The rendered audit trail (`--audit`) is the committed `example-run.audit.log`:
+
+```
+APIA orchestrator run audit
+  run_id : run-example
+  goal   : add a rounding option to the pyapp calculator report
+  status : done
+
+...  graph_built       [-]  validated graph of 3 task(s); global_max_tasks=20, per_task_max_iterations=3
+...  task_ready        [ingest-pyapp]
+...  task_running      [ingest-pyapp]
+...  task_done         [ingest-pyapp]
+...  task_ready        [code-on-pyapp]
+...  task_running      [code-on-pyapp]
+...  task_done         [code-on-pyapp]
+...  task_ready        [review-pyapp]
+...  task_running      [review-pyapp]
+...  task_done         [review-pyapp]
+...  run_done          [-]  all 3 task(s) done
+```
+
+### Global-cap stop (bounded, fail-loud)
+
+With the global bound overridden to 2 (`--global-max-tasks 2`, for the proof), consuming
+the third task HALTS the run rather than continuing:
+
+```
+run run-cap => stopped
+  stop: global_cap_reached: 2 task(s) consumed reached the global_max_tasks bound of 2; stopping fail-loud rather than continuing
+  running: ['code-on-pyapp']
+  done: ['ingest-pyapp']
+```
+
+The process exits **non-zero** so a script can gate on it.
+
+### Failed task halts with a specific ask (stop-and-ask)
+
+Setting a task `failed` (e.g. the eval loop hit `max_iterations` without going green)
+HALTS the whole run and leaves its dependents **blocked**, surfacing the task's specific
+`ask` rather than looping or guessing:
+
+```
+run run-fail => failed
+  stop: task 'code-on-pyapp' failed: evalloop hit max_iterations=3 without going green on samples/pyapp; the rounding change still fails the roundtrip_identity invariant. Confirm expected rounding mode (half-even vs half-up) before I retry.
+  blocked: ['review-pyapp']
+  done: ['ingest-pyapp']
+  failed: ['code-on-pyapp']
+```
+
+`review-pyapp` is **blocked** (not ready), the run status is `failed`, and the process
+exits non-zero.
+
+### Cycle detection (fail-loud at init)
+
+A cyclic graph is **rejected**, never silently run:
+
+```bash
+.venv/bin/python .apia/scripts/orchestrate.py --init "cycle demo" --tasks cyclic-tasks.json --run-state /tmp/cycle.json
+# ValueError: task graph has a cycle: a -> b -> a   (exit non-zero)
+```
+
+### CI-asserted
+
+`.apia/scripts/tests/test_orchestrate.py` encodes all of the above as pytest so CI
+asserts it on every run: build/validate, cycle detection, the topological/ready frontier,
+dependency unblocking, the lossless persist/load/resume round-trip (a resumed run
+continues from the saved frontier), the global-cap stop with a specific reason, the
+per-task cap REUSING `evalloop.resolve_max_iterations` (same value), the
+failed-task-halts-with-ask case (dependents blocked), and the no-LLM/no-network static
+guard. The gate-reuse wiring (`decide_task` -> `evalloop.evaluate` /
+`scaffold.decide_generation` / live-stage verdict) is asserted to delegate, never
+re-decide. A passing run of this file **is** the durable guarantee for the orchestrator.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:
