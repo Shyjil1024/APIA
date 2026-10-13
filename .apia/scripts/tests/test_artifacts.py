@@ -40,6 +40,8 @@ FORK_SKILLS = {
     "apia-quality-scan",
     "apia-perf-scan",
     "apia-limitations",
+    # Phase-4 orchestration: graph planning is heavy reasoning -> forked context.
+    "apia-orchestrate",
 }
 EXPECTED_SKILLS = {
     "apia-ingest",
@@ -50,8 +52,17 @@ EXPECTED_SKILLS = {
     "apia-quality-scan",
     "apia-perf-scan",
     "apia-limitations",
+    # Phase-4 orchestration skill.
+    "apia-orchestrate",
 }
-EXPECTED_AGENTS = {"apia-planner", "apia-implementer", "apia-tester", "apia-reviewer"}
+EXPECTED_AGENTS = {
+    "apia-planner",
+    "apia-implementer",
+    "apia-tester",
+    "apia-reviewer",
+    # Phase-4 read-only conductor agent.
+    "apia-orchestrator",
+}
 EXPECTED_PROMPTS = {
     "apia-ingest",
     "apia-feature",
@@ -60,6 +71,8 @@ EXPECTED_PROMPTS = {
     "apia-apply",
     "apia-iterate",
     "apia-review",
+    # Phase-4 orchestration prompt (single-agent, VS 2022 / JetBrains compatible).
+    "apia-run",
 }
 
 
@@ -218,6 +231,37 @@ def test_reviewer_is_read_only():
     tools = " ".join(data.get("tools", [])).lower()
     assert "edit" not in tools, "reviewer must be read-only (no edit tools)"
     assert "terminal" not in tools, "reviewer must be read-only (no run/terminal tools)"
+
+
+def test_orchestrator_is_read_only():
+    """FEAT-002: the orchestrator is a read-only CONDUCTOR; it plans + sequences and
+    hands off to the editing agents, so it must have no edit/terminal tools and can
+    never write a change itself (mirrors test_reviewer_is_read_only)."""
+    path = os.path.join(AGENTS_DIR, "apia-orchestrator.agent.md")
+    data, _ = _frontmatter(path)
+    tools = " ".join(data.get("tools", [])).lower()
+    assert "edit" not in tools, "orchestrator must be read-only (no edit tools)"
+    assert "terminal" not in tools, "orchestrator must be read-only (no run/terminal tools)"
+
+
+def test_run_prompt_matches_read_only_orchestrator():
+    """FEAT-002: if the run prompt declares an agent it must drive the read-only
+    apia-orchestrator and must not grant it edit/terminal tools (mirrors the review
+    prompt guard)."""
+    path = os.path.join(PROMPTS_DIR, "apia-run.prompt.md")
+    data, _ = _frontmatter(path)
+    agent = data.get("agent")
+    if agent is not None:
+        assert agent == "apia-orchestrator", (
+            "run prompt is expected to drive the read-only orchestrator"
+        )
+    joined = " ".join(str(t).lower() for t in data.get("tools", []))
+    assert "edit" not in joined, (
+        "run prompt must not grant edit tools to the read-only orchestrator"
+    )
+    assert "terminal" not in joined, (
+        "run prompt must not grant run/terminal to the read-only orchestrator"
+    )
 
 
 def test_review_prompt_matches_read_only_reviewer():
