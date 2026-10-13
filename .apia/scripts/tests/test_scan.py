@@ -509,6 +509,137 @@ def test_executed_clang_tidy_against_smelly(tmp_path):
         assert f["source_tool"] == "clang-tidy"
 
 
+# --- stack auto-detection (no --adapter given) -------------------------------
+
+def test_detect_stack_and_adapter_picks_cpp_for_cppapp():
+    """scan auto-detects the C++ stack for samples/cppapp and resolves cpp.yml.
+
+    Mirrors the no---adapter path: ingest.detect_stacks drives the choice and the
+    adapter is resolved from config.yml stacks[].adapter, so a C++ repo loads the
+    cpp adapter (not the python default).
+    """
+    stack, adapter_path, detected = scan.detect_stack_and_adapter(CPPAPP)
+    assert stack == "cpp", "expected cpp to be the detected primary stack"
+    assert adapter_path is not None and os.path.basename(adapter_path) == "cpp.yml"
+    assert os.path.isfile(adapter_path)
+    adapter = scan.load_adapter(adapter_path)
+    assert adapter.get("name") == "cpp"
+    # The cpp adapter selects the cpp scanners (cppcheck / clang-tidy), not the
+    # Python ones.
+    tools = {sd.get("tool") for _, sd in scan._iter_scanner_defs(adapter, "all")}
+    assert "cppcheck" in tools
+    assert "bandit" not in tools
+
+
+def test_detect_stack_and_adapter_picks_python_for_pyapp():
+    """samples/pyapp auto-detects the python stack and resolves python.yml."""
+    stack, adapter_path, detected = scan.detect_stack_and_adapter(PYAPP)
+    assert stack == "python"
+    assert adapter_path is not None and os.path.basename(adapter_path) == "python.yml"
+
+
+# --- generated/vendored exclusion filter -------------------------------------
+
+def test_exclusion_filter_drops_build_and_vendored_paths():
+    """Pure-unit test of the exclusion filter with SYNTHETIC paths.
+
+    Runs without any scanner tool: it proves that findings whose file path lives
+    under an excluded (generated/vendored) directory -- a CMake build/ tree, its
+    _deps vendoring dir, node_modules, .venv, etc. -- are dropped, while the
+    project's OWN source findings pass through.
+    """
+    findings = [
+        _mk("high", "security"),  # file.py at repo root -> kept
+        scan.make_finding("high", "security",
+                          "build/_deps/googletest-src/x.py", 1, "B307", "m", "bandit"),
+        scan.make_finding("low", "quality",
+                          "../../build/_deps/googletest-src/y.py", 2, "E111", "m", "flake8"),
+        scan.make_finding("high", "security", "src/smelly.cpp", 22, "uninitvar", "m", "cppcheck"),
+        scan.make_finding("low", "quality", "node_modules/pkg/a.js", 3, "X", "m", "t"),
+        scan.make_finding("low", "quality", ".venv/lib/dep.py", 4, "Y", "m", "t"),
+        scan.make_finding("low", "quality", "calc/real.py", 5, "Z", "m", "t"),
+    ]
+    kept = scan.filter_excluded_findings(findings)
+    kept_files = {f["file"] for f in kept}
+    assert "src/smelly.cpp" in kept_files
+    assert "calc/real.py" in kept_files
+    assert "f.py" in kept_files  # the _mk default
+    for bad in ("build/_deps/googletest-src/x.py",
+                "../../build/_deps/googletest-src/y.py",
+                "node_modules/pkg/a.js", ".venv/lib/dep.py"):
+        assert bad not in kept_files, "{} should have been excluded".format(bad)
+    # And the low-level predicate matches on any path component.
+    assert scan._is_excluded_path("a/b/build/c.py") is True
+    assert scan._is_excluded_path("src/_deps/vendor.cpp") is True
+    assert scan._is_excluded_path("src/app/main.cpp") is False
+    assert scan._is_excluded_path(None) is False
+
+
+@pytest.mark.skipif(not _HAVE_CPPCHECK, reason="cppcheck not on PATH")
+def test_executed_scan_excludes_build_tree_for_cppapp():
+    """EXECUTED: scan samples/cppapp and assert build/_deps findings are gone.
+
+    The smelly.cpp findings (uninitvar/memleak) must appear while NO finding's
+    file path points into the gitignored CMake build/ tree (incl. build/_deps,
+    GoogleTest's own vendored Python files that previously produced ~941 spurious
+    findings).
+    """
+    stack, adapter_path, _ = scan.detect_stack_and_adapter(CPPAPP)
+    assert stack == "cpp"
+    adapter = scan.load_adapter(adapter_path)
+    report = scan.scan(CPPAPP, adapter, {})
+    files = [f.get("file") or "" for f in report["findings"]]
+    for path in files:
+        norm = path.replace("\\", "/")
+        assert "build/_deps" not in norm, "build/_deps finding leaked: {}".format(path)
+        assert "/build/" not in norm, "build/ finding leaked: {}".format(path)
+        assert not norm.split("/").count("build"), "build/ component leaked: {}".format(path)
+    # The project's own smells still surface.
+    rules = {f["rule"] for f in report["findings"] if f["source_tool"] == "cppcheck"}
+    assert "uninitvar" in rules
+    assert "memleak" in rules
+
+
+# --- doctor reports module-invoked scanners as present -----------------------
+
+def test_doctor_reports_module_invoked_scanner_present():
+    """An installed `python -m` scanner is reported PRESENT by scan.py's doctor.
+
+    bandit is invoked as `python -m bandit` (no console script on PATH in this
+    venv), so a shutil.which probe would under-report it. The module probe must
+    report it present. Skip only if bandit is genuinely not importable here.
+    """
+    import importlib.util
+    if importlib.util.find_spec("bandit") is None:
+        pytest.skip("bandit module not importable in this environment")
+
+    import ingest  # noqa: E402
+    report = ingest.doctor(repo_path=None)
+    by_name = {e["tool"]: e for e in report["tools"]}
+    assert by_name["bandit"]["present"] is True, \
+        "module-invoked bandit must be reported present"
+    # It must NOT be counted as a hard failure (scanner category is non-gating).
+    assert "bandit" not in report["missing_required"]
+
+    # The adapter scanner table scan.py surfaces must also show it present.
+    adapter = scan.load_adapter(PY_ADAPTER)
+    tools = scan.scanner_tools_report(adapter)
+    assert "bandit" in tools["present"]
+
+
+def test_doctor_scanner_absence_is_non_gating():
+    """A missing scanner stays a warning, never a hard failure (non-gating)."""
+    import ingest  # noqa: E402
+    tools = [
+        ("not-a-real-scanner", ["-m", "not_a_real_scanner", "--version"],
+         "Deliberately absent scanner.", "scanner", "definitely_absent_module_xyz"),
+    ]
+    report = ingest.doctor(tools=tools, required_categories=set())
+    by_name = {e["tool"]: e for e in report["tools"]}
+    assert by_name["not-a-real-scanner"]["present"] is False
+    assert report["missing_required"] == []  # scanner category never gates
+
+
 # --- (h) static no-network / no-LLM guard ------------------------------------
 
 def test_scan_makes_no_network_or_llm_calls():

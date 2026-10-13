@@ -586,14 +586,18 @@ DOCTOR_TOOLS = [
     ("pytest", ["--version"], "pytest (Python test runner).", "optional"),
     # Phase-2 Reviewer scanners (scan.py). ADVISORY, never gating: a missing
     # scanner is reported as a warning only. The Python scanners are invoked via
-    # `python -m <mod>` by the adapter so they run under the venv; the doctor
-    # PATH probe here reports whether a standalone shim is also on PATH (which
-    # these wheels install), so absence is informational, not a failure.
-    ("bandit", ["--version"], "bandit (Python security scanner; Reviewer).", "scanner"),
-    ("ruff", ["--version"], "ruff (Python lint/quality scanner; Reviewer).", "scanner"),
-    ("radon", ["--version"], "radon (Python complexity/perf scanner; Reviewer).", "scanner"),
-    ("pip-audit", ["--version"], "pip-audit (Python dependency CVE scanner; Reviewer).", "scanner"),
-    ("flake8", ["--version"], "flake8 (Python lint/quality scanner; Reviewer).", "scanner"),
+    # `python -m <mod>` by the adapter so they run under the venv and install no
+    # reliable console script on PATH; a shutil.which lookup therefore
+    # UNDER-reports them as MISSING even when installed. Each declares a MODULE
+    # probe (the optional 5th element) so doctor() reports presence by MODULE
+    # availability in this interpreter (importlib.util.find_spec) -- the same
+    # interpreter the `python -m <mod>` scanner commands run under -- instead of
+    # a PATH lookup. (pip-audit's import module is ``pip_audit``.)
+    ("bandit", ["-m", "bandit", "--version"], "bandit (Python security scanner; Reviewer).", "scanner", "bandit"),
+    ("ruff", ["-m", "ruff", "--version"], "ruff (Python lint/quality scanner; Reviewer).", "scanner", "ruff"),
+    ("radon", ["-m", "radon", "--version"], "radon (Python complexity/perf scanner; Reviewer).", "scanner", "radon"),
+    ("pip-audit", ["-m", "pip_audit", "--version"], "pip-audit (Python dependency CVE scanner; Reviewer).", "scanner", "pip_audit"),
+    ("flake8", ["-m", "flake8", "--version"], "flake8 (Python lint/quality scanner; Reviewer).", "scanner", "flake8"),
     ("cppcheck", ["--version"], "cppcheck (C++ security/quality/perf scanner; Reviewer).", "scanner_cpp"),
     ("clang-tidy", ["--version"], "clang-tidy (C++ quality scanner; Reviewer).", "scanner_cpp"),
 ]
@@ -625,6 +629,40 @@ def _tool_entry_fields(entry):
         return entry[0], entry[1], entry[2], entry[3]
     exe, version_args, desc = entry
     return exe, version_args, desc, "optional"
+
+
+def _tool_entry_module(entry):
+    """Return the module-availability probe declared by a DOCTOR_TOOLS entry.
+
+    Scanner tools that are invoked as ``python -m <module>`` (bandit / ruff /
+    radon / pip-audit / flake8) install no reliable console script on PATH, so a
+    ``shutil.which`` lookup under-reports them as MISSING even though they ARE
+    installed and runnable in the current interpreter's environment. Such an
+    entry may declare a MODULE name as an optional 5th element; when present,
+    doctor() probes presence via module availability in THIS interpreter
+    (importlib.util.find_spec, a pure in-process lookup -- no network, no code
+    execution) instead of a PATH lookup. Entries without a 5th element (every
+    legacy 3-/4-tuple) return None and keep the shutil.which behavior unchanged.
+    """
+    if len(entry) >= 5 and entry[4]:
+        return entry[4]
+    return None
+
+
+def _module_available(module):
+    """Return True when ``module`` is importable in the current interpreter.
+
+    Uses importlib.util.find_spec, which resolves the module WITHOUT importing
+    (and thus without executing) it. Strictly local and offline: this is the
+    same interpreter (sys.executable) the adapter's ``python -m <module>``
+    scanner commands run under, so availability here means the scanner is
+    genuinely runnable.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
 
 
 def required_tool_categories(repo_path=None):
@@ -705,13 +743,27 @@ def doctor(tools=None, repo_path=None, required_categories=None):
     missing_required = []
     for entry in tools:
         exe, version_args, desc, category = _tool_entry_fields(entry)
-        path = shutil.which(exe)
-        present = path is not None
-        # An empty version_args means the tool is checked presence-only (e.g.
-        # cl.exe has no clean --version banner). We never run it; we only report
-        # whether it is reachable.
-        version_probed = bool(version_args)
-        version = _tool_version(exe, version_args) if (present and version_probed) else None
+        module = _tool_entry_module(entry)
+        if module is not None:
+            # Module-invoked scanner (python -m <module>): presence is MODULE
+            # availability in THIS interpreter (which is exactly how the adapter
+            # runs it), not a console-script PATH lookup. The version probe runs
+            # under sys.executable (`python -m <module> --version`).
+            present = _module_available(module)
+            path = sys.executable if present else None
+            version_probed = bool(version_args)
+            version = (
+                _tool_version(sys.executable, version_args)
+                if (present and version_probed) else None
+            )
+        else:
+            path = shutil.which(exe)
+            present = path is not None
+            # An empty version_args means the tool is checked presence-only (e.g.
+            # cl.exe has no clean --version banner). We never run it; we only report
+            # whether it is reachable.
+            version_probed = bool(version_args)
+            version = _tool_version(exe, version_args) if (present and version_probed) else None
         is_required = category in required_categories
         tool_entry = {
             "tool": exe,

@@ -96,6 +96,59 @@ _SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 CATEGORIES = ("security", "quality", "perf", "limitations")
 
 
+# Directory names that hold GENERATED or VENDORED output, never the project's
+# OWN sources. Findings whose path lives under any of these are build artifacts
+# (e.g. a CMake ``build/`` tree vendors GoogleTest's own Python files) and are
+# filtered out so the report is grounded in the project's real code. This
+# mirrors ingest.DEFAULT_IGNORES (same "scope to the project's own tree, not
+# generated output" discipline) and is config/constant-driven, not hard-coded to
+# any one sample. ``_deps`` is CMake's FetchContent vendoring dir; ``build`` is
+# the conventional CMake build dir.
+EXCLUDED_DIRS = (
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".tox",
+    "dist",
+    "build",
+    "_deps",
+    ".apia",
+)
+
+
+def _is_excluded_path(path, excluded_dirs=EXCLUDED_DIRS):
+    """Return True when ``path`` lives under an excluded (generated/vendored) dir.
+
+    A finding path is excluded when ANY of its path components is an excluded
+    directory name, so both ``build/_deps/...`` and ``../../build/foo.py`` (a
+    repo-relative path cppcheck/bandit may emit) are caught. Pure string
+    inspection; nothing is opened. Paths outside any excluded dir pass through.
+    """
+    if not path:
+        return False
+    norm = str(path).replace("\\", "/")
+    components = [c for c in norm.split("/") if c not in ("", ".", "..")]
+    excluded = set(excluded_dirs)
+    return any(c in excluded for c in components)
+
+
+def filter_excluded_findings(findings, excluded_dirs=EXCLUDED_DIRS):
+    """Drop findings that live under a generated/vendored directory.
+
+    Keeps the report grounded in the project's OWN sources: a CMake ``build/``
+    tree (or ``node_modules`` / ``.venv`` / etc.) is tool-emitted or vendored and
+    its contents are never the project's code under review. Returns a new list.
+    """
+    return [f for f in findings if not _is_excluded_path(f.get("file"), excluded_dirs)]
+
+
 def severity_rank(severity):
     """Return a sortable rank for a severity (lower rank == more severe).
 
@@ -544,7 +597,7 @@ def _tool_present(scanner_def):
     PATH. Pure local lookups, no execution of project code.
     """
     import shutil
-    import importlib
+    import importlib.util
 
     parts = shlex.split(scanner_def.get("command", ""))
     if not parts:
@@ -552,9 +605,11 @@ def _tool_present(scanner_def):
     if parts[0] in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         module = parts[2]
         try:
-            importlib.import_module(module)
-            return True
-        except Exception:
+            # find_spec RESOLVES the module without importing (executing) it --
+            # strictly local/offline presence check in the SAME interpreter the
+            # scanner runs under.
+            return importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError, ModuleNotFoundError):
             return False
     return shutil.which(parts[0]) is not None
 
@@ -728,6 +783,92 @@ def default_adapter_path():
     return os.path.join(apia_dir, "adapters", "python.yml")
 
 
+def _config_stacks(repo_path=None):
+    """Return the ``stacks:`` list from config.yml (repo-first), or [].
+
+    Resolution is REPO-FIRST (consistent with load_review_config /
+    verify.load_cpp_overrides): the target repo's own ``.apia/config.yml`` wins,
+    then the APIA package config is the fallback. Each entry maps a stack name to
+    its adapter path (relative to the .apia/ dir).
+    """
+    try:
+        import yaml
+    except ImportError:
+        return []
+    candidates = []
+    if repo_path:
+        candidates.append(os.path.join(repo_path, ".apia", "config.yml"))
+    candidates.append(_package_config_path())
+    for cfg in candidates:
+        if not os.path.isfile(cfg):
+            continue
+        try:
+            with open(cfg, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, ValueError):
+            continue
+        stacks = data.get("stacks")
+        if isinstance(stacks, list) and stacks:
+            return stacks
+    return []
+
+
+def _adapter_path_for_stack(stack_name, repo_path=None):
+    """Resolve a detected stack name to its adapter YAML path via config.yml.
+
+    Mirrors how verify.py/ingest resolve a stack -> adapter: the config's
+    ``stacks:`` list maps ``name`` -> ``adapter`` (a path relative to the .apia/
+    dir). Returns an absolute path, or None when the stack is not declared.
+    """
+    apia_dir = os.path.dirname(_SCRIPTS_DIR)
+    for entry in _config_stacks(repo_path):
+        if isinstance(entry, dict) and entry.get("name") == stack_name:
+            adapter_rel = entry.get("adapter")
+            if adapter_rel:
+                return os.path.normpath(os.path.join(apia_dir, adapter_rel))
+    return None
+
+
+def detect_stack_and_adapter(repo_path):
+    """Auto-detect the repo's primary stack and resolve its adapter path.
+
+    Reuses ingest.detect_stacks()/walk_repo() (the SAME off-model detection the
+    ingester uses) so scan.py picks the right adapter when no --adapter is given.
+    Returns ``(stack_name, adapter_path, detected_stacks)``:
+      * when one or more stacks are detected, the PRIMARY/first (by source
+        count, then config order) is chosen and its adapter resolved from
+        config.yml;
+      * when detection is unavailable (ingest missing) or finds nothing, returns
+        ``(None, None, {})`` so the caller can fall back to the Python default.
+    Detection is best-effort and never crashes the scan.
+    """
+    if ingest is None:
+        return None, None, {}
+    try:
+        files = ingest.walk_repo(repo_path)
+        detected = ingest.detect_stacks(repo_path, files)
+    except Exception:
+        return None, None, {}
+    if not detected:
+        return None, None, {}
+    # Prefer the stack with the most source files; break ties by config order
+    # so a deterministic PRIMARY is chosen when detection is ambiguous.
+    config_order = [e.get("name") for e in _config_stacks(repo_path)
+                    if isinstance(e, dict)]
+
+    def _rank(name):
+        src = detected[name].get("source_count", 0)
+        try:
+            order = config_order.index(name)
+        except ValueError:
+            order = len(config_order)
+        return (-src, order)
+
+    primary = sorted(detected.keys(), key=_rank)[0]
+    adapter_path = _adapter_path_for_stack(primary, repo_path)
+    return primary, adapter_path, detected
+
+
 def load_adapter(adapter_path):
     """Load the stack adapter (YAML). PyYAML is the only optional dependency."""
     try:
@@ -865,6 +1006,11 @@ def scan(repo, adapter, options=None):
             unavailable.append(meta.get("tool"))
         all_findings.extend(findings)
 
+    # Ground the report in the project's OWN sources: drop any finding under a
+    # generated/vendored directory (e.g. a CMake build/ tree that vendors
+    # GoogleTest's own Python files) so build artifacts never become findings.
+    all_findings = filter_excluded_findings(all_findings)
+
     all_findings = _sort_findings(all_findings)
 
     review_config = load_review_config(repo_path)
@@ -877,6 +1023,7 @@ def scan(repo, adapter, options=None):
         "repo": os.path.basename(repo_path.rstrip(os.sep)),
         "repo_path": repo_path,
         "stack": adapter.get("name", "unknown"),
+        "adapter_source": options.get("adapter_source"),
         "category": category,
         "findings": all_findings,
         "counts_by_severity": _counts_by_severity(all_findings),
@@ -927,6 +1074,8 @@ def format_human(report):
     """Render a compact human-readable prioritized findings summary."""
     lines = []
     lines.append("APIA scan :: {} (stack: {})".format(report["repo"], report["stack"]))
+    if report.get("adapter_source"):
+        lines.append("  adapter: {}".format(report["adapter_source"]))
     sev = report["counts_by_severity"]
     lines.append("  findings: {} total  [{}]".format(
         len(report["findings"]),
@@ -990,7 +1139,37 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    adapter_path = args.adapter or default_adapter_path()
+    # Adapter resolution: an explicit --adapter ALWAYS wins (no detection).
+    # Otherwise, when a repo path is given, AUTO-DETECT the stack (reusing
+    # ingest.detect_stacks) and resolve the matching adapter from config.yml;
+    # fall back to the Python default when detection finds nothing. The chosen
+    # adapter + its provenance is stated in the human output (adapter_source).
+    adapter_source = None
+    detected_stack = None
+    if args.adapter:
+        adapter_path = args.adapter
+        adapter_source = "explicit (--adapter)"
+    elif args.repo_path and os.path.isdir(args.repo_path):
+        detected_stack, detected_adapter, detected = detect_stack_and_adapter(args.repo_path)
+        if detected_adapter and os.path.isfile(detected_adapter):
+            adapter_path = detected_adapter
+            others = [s for s in detected if s != detected_stack]
+            if others:
+                adapter_source = (
+                    "auto-detected stack '{}' (also saw: {}) -> {}".format(
+                        detected_stack, ", ".join(sorted(others)),
+                        os.path.basename(adapter_path)))
+            else:
+                adapter_source = "auto-detected stack '{}' -> {}".format(
+                    detected_stack, os.path.basename(adapter_path))
+        else:
+            adapter_path = default_adapter_path()
+            adapter_source = (
+                "no stack detected -> defaulting to {}".format(
+                    os.path.basename(adapter_path)))
+    else:
+        adapter_path = default_adapter_path()
+        adapter_source = "default -> {}".format(os.path.basename(adapter_path))
 
     # --doctor: shared offline preflight for the scanner tools. Reuses
     # ingest.doctor() (which now carries the scanner/scanner_cpp categories) so
@@ -1030,6 +1209,7 @@ def main(argv=None):
     options = {
         "category": args.category,
         "fail_on_severity": args.fail_on_severity,
+        "adapter_source": adapter_source,
     }
     try:
         report = scan(args.repo_path, adapter, options)
