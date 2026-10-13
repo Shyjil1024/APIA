@@ -643,7 +643,15 @@ def test_doctor_scanner_absence_is_non_gating():
 # --- (h) static no-network / no-LLM guard ------------------------------------
 
 def test_scan_makes_no_network_or_llm_calls():
-    """Static guard: scan.py must not import network/LLM SDKs or model endpoints."""
+    """Static guard: scan.py must not import network/LLM SDKs or model endpoints.
+
+    This is a TRIPWIRE (a static substring smoke test), not a proof: it mirrors
+    test_ingest.test_ingest_makes_no_network_or_llm_calls and catches the common,
+    literal network/LLM imports. It would NOT catch an aliased or obfuscated
+    import (e.g. ``from urllib import request`` or ``import socket as s``). The
+    real guarantee is structural: scan.py is stdlib-only and the only subprocess
+    it ever spawns is the adapter-declared LOCAL scanner tool (see the module
+    docstring's HARD CONSTRAINT and the single _run() chokepoint)."""
     src_path = os.path.join(SCRIPTS_DIR, "scan.py")
     with open(src_path, "r", encoding="utf-8") as fh:
         src = fh.read()
