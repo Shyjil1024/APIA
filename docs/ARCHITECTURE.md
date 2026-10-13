@@ -271,6 +271,86 @@ it assembles the structured failure a model will consume and decides green/stop/
 single agent (see `docs/PORTABILITY.md`), so it runs on Visual Studio 2022, which honors
 only Tier-0 + Tier-1 prompt files (`/apia-iterate`), not Tier-2 skills/agents.
 
+### Iterate-to-Best (Phase 5): green AND the reviewer gate
+
+Phase 5 fuses this iterate loop with the Phase-2 reviewer (section 3d) so iteration no
+longer stops at merely "green" (tests pass) but continues toward the **BEST** solution the
+configured thresholds define. The acceptance criterion for each iteration becomes BOTH:
+
+1. the deterministic test/build verification already in place (regression guard + new
+   tests + build-only + the Layer-1 eval data), AND
+2. the **reviewer gate** - the `scan.py` findings evaluated via
+   `scan.apply_thresholds` against the `review.thresholds` block in `.apia/config.yml`
+   (security/quality/perf severities + per-category caps, section 3d).
+
+An iteration is "good enough / best reached" **only** when tests are green AND the reviewer
+gate passes the configured thresholds. A gate failure counts as a **real** failure
+(fail-loud): a green-verify + failing-gate iteration still yields a report and keeps the
+loop running.
+
+**The ONE shared fused decision.** The fusion is a single function,
+`evalloop.evaluate_quality_gated(repo_path, adapter, options=None, state=None)`. Its
+statuses are `green` (converged: tests/build green AND Layer-1 green AND the reviewer gate
+passes), `needs_fix`, `stop` (`reason: max_iterations_reached`), and `needs_confirmation`
+(the anti-circularity gate of section 3c). `evaluate` is now a thin delegate to it and
+stays backward compatible: when no `options['findings']` are supplied the reviewer gate is
+not in play and the decision degrades to today's tests-green path.
+
+**Three callers, one definition of "best."** So "best" means the same thing everywhere, all
+three entry points delegate to `evaluate_quality_gated`:
+
+- **`verify.py --iterate`** - the standalone loop. It now accepts `--findings <json>` (a raw
+  findings list OR a `scan.py` report with a `findings` key) to turn the reviewer gate on;
+  without `--findings` the behavior is unchanged tests-green. The human renderer prints the
+  reviewer-gate line, the best-so-far attempt, and the residual summary.
+- **`scaffold.decide_generation`** (section 3e) - maps the fused status back to its own
+  contract `green | iterate | stop | ask`; an honest-partial generation can **never** be
+  `green`. It passes a precomputed `run_iteration_cycle` result via `options['cycle']` so it
+  delegates WITHOUT re-running the generation verify it already performed.
+- **`orchestrate.decide_task`** (section 3f) - findings thread through
+  `inputs['options']['findings']` into `evaluate`; the verdict is recorded **verbatim** (no
+  re-decision), so an orchestrated task gets no weaker a bar than a human-authored change.
+
+**Scanner findings fold into the EXISTING failure report.** On a failing reviewer gate the
+EXACT normalized scanner findings (the `scan.make_finding` shape `{severity, category,
+file, line, rule, message, source_tool}`) are folded into evalloop's EXISTING structured
+failure report under `report['scanner_findings']`, and the exact `scan.apply_thresholds`
+block (`passed / fail_on_severity / failing_severities / failing_counts / reasons`) under
+`report['reviewer_gate']`. All pre-existing report keys are preserved and the report stays
+JSON-serializable. APIA does not invent a parallel report; it extends `build_failure_report`
+with two optional params (`scan_gate` + `findings`).
+
+**Best-so-far + bounded convergence / stop / ask.** `score_iteration` ranks an iteration by
+its residual severity (weighted) plus the failing verify-phase count (LOWER is better);
+`LoopState` carries a `best_so_far` field tracked across iterations. On hitting the HARD
+`max_iterations` cap the decision STOPS and asks, carrying the **BEST** iteration reached
+(not necessarily the last) and a specific residual summary from `_residual_summary`, which
+groups residuals by SEVERITY (e.g. `high=1`). The loop never loops forever and never
+silently accepts a sub-threshold result as if it were best. The tie-break between two
+attempts that rank EQUALLY is the knob `eval_data.iterate_to_best.best_so_far_tie_break`
+(`fewest_findings` | `latest` | `earliest`).
+
+**The configurable quality bar.** The tunable definition of "best" IS the
+`review.thresholds` block (`fail_on_severity: high`, `max_findings: {security: 0}`) - the
+SAME block the standalone reviewer and the generation gate already read. The only
+Phase-5-specific knob is `eval_data.iterate_to_best.best_so_far_tie_break`; both live under
+EXISTING config structures (no new top-level block). `config.yml` carries explanatory
+comments for these.
+
+**No external model; the fix is a LIVE Copilot action.** The off-model scripts assemble the
+eval + scan results, apply the thresholds, decide converged / continue / stop, emit the
+structured failure report, and enforce the cap - they NEVER call a model. The per-iteration
+code fix is a LIVE Copilot action on the user's session (section 3c). Model temperature is
+not settable; "best" is enforced by deterministic thresholds + grounded findings, not a
+temperature setting. The whole fused loop is still expressible via Tier-0 as a single agent,
+so it runs on VS 2022 (`/apia-iterate`).
+
+**Honest framing (do not overclaim).** "best" means "meets the user-configured deterministic
+thresholds (green tests + reviewer gate), OR the closest bounded attempt with an honest
+residual report" - **NOT** a guarantee of globally optimal or provably perfect code. The
+ceiling is still the underlying Copilot model, the quality of the tests, and what the
+scanners can detect.
+
 ## 3c. Anti-circularity / acceptance-criteria safeguard
 
 A model that both **writes the code** and **invents the test** could "pass" by grading
@@ -391,9 +471,11 @@ apply_thresholds(findings, thresholds) -> gate dict
 `max_findings` (per-category caps plus an optional `total`). BOTH a standalone reviewer
 and a future generation gate read this SAME `review.thresholds` block and call
 `apply_thresholds()` with the SAME signature, so the gate is **composable without
-rework**. The structured report can later feed the **iterate-to-best** eval-loop
-(`.apia/scripts/evalloop.py`) as a quality gate alongside the Layer-1 eval data: the
-interface is structured now, the full **fusion is DEFERRED** (see section 7).
+rework**. The structured report feeds the **iterate-to-best** eval-loop
+(`.apia/scripts/evalloop.py`) as a quality gate alongside the Layer-1 eval data: this
+**fusion is DELIVERED in Phase 5** via the single shared `evalloop.evaluate_quality_gated`
+(see "Iterate-to-Best (Phase 5)" in section 3b), which calls this SAME
+`apply_thresholds()` against this SAME `review.thresholds` block.
 
 > **The user's requirement:** once greenfield generation ships, **each generated
 > increment passes through these SAME reviewer gates** (`scan.py` +
@@ -493,11 +575,12 @@ does the mechanical work for free), and stays **strictly local** (no auto-push/P
 
 ### Deferred (clearly labeled)
 
-The following remain **DEFERRED** (see section 7): the full iterate-to-best threshold
-tuning/fusion into `evalloop.py`; the **C#/Groovy** adapters to parity; concrete **MCP
-data sources**; auto-push/PR/MR/CI integration; the VS Code **marketplace extension**;
-and cross-team/org knowledge & capability sharing + plugins. (`apia-orchestrator`
-task-graph autonomy is now **DELIVERED** -- see section 3f.)
+The following remain **DEFERRED** (see section 7): the **C#/Groovy** adapters to parity;
+concrete **MCP data sources**; auto-push/PR/MR/CI integration; the VS Code **marketplace
+extension**; and cross-team/org knowledge & capability sharing + plugins.
+(`apia-orchestrator` task-graph autonomy is now **DELIVERED** -- see section 3f; the full
+**iterate-to-best** threshold fusion is now **DELIVERED** -- see "Iterate-to-Best (Phase 5)"
+in section 3b.)
 
 ---
 
@@ -621,12 +704,12 @@ stays **strictly local**.
 
 ### Deferred (clearly labeled)
 
-The following remain **DEFERRED** (see section 7): the full **iterate-to-best** threshold
-tuning/fusion beyond wiring the existing reviewer + eval gates; the **C#/Groovy**
-adapters to parity; concrete **MCP data sources**; **auto-push/PR/MR/CI/packaging/
-signing** (APIA stays strictly local; the user pushes manually); the VS Code
-**marketplace extension**; and **cross-team/org/external knowledge & capability sharing +
-plugins**.
+The following remain **DEFERRED** (see section 7): the **C#/Groovy** adapters to parity;
+concrete **MCP data sources**; **auto-push/PR/MR/CI/packaging/signing** (APIA stays
+strictly local; the user pushes manually); the VS Code **marketplace extension**; and
+**cross-team/org/external knowledge & capability sharing + plugins**. (The full
+**iterate-to-best** threshold fusion is now **DELIVERED** -- see "Iterate-to-Best
+(Phase 5)" in section 3b.)
 
 ---
 
@@ -781,9 +864,21 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   stays strictly local (no auto-push). "Minimal interaction, not no interaction" (see section 3f).
 - **DELIVERED (Phase 4) - Batched-upfront-clarification**: the orchestrator asks everything knowable
   up front, then runs uninterrupted to the next checkpoint (section 3f).
-- **DEFERRED - Full iterate-to-best fusion**: wiring the reviewer findings report into the
-  `evalloop.py` iterate-to-best quality gate alongside the Layer-1 eval data. The composable
-  interface exists today (section 3d); the fusion itself is deferred.
+- **DELIVERED (Phase 5) - Iterate-to-Best fusion**: the reviewer findings report is wired
+  into the `evalloop.py` iterate loop as a quality gate alongside the Layer-1 eval data,
+  through the SINGLE shared decision `evalloop.evaluate_quality_gated`. Each iteration's
+  acceptance criterion is now tests/build green AND Layer-1 green AND the reviewer gate
+  (`scan.apply_thresholds` vs `review.thresholds`) passing; on a failing gate the EXACT
+  scanner findings fold into evalloop's EXISTING structured failure report
+  (`scanner_findings` + `reviewer_gate`); the loop tracks best-so-far and, on the HARD
+  `max_iterations` cap, STOPS and asks carrying the BEST attempt (not the last) + a specific
+  residual summary. All three entry points (`verify.py --iterate` with `--findings`,
+  `scaffold.decide_generation`, `orchestrate.decide_task`) delegate to it so "best" means the
+  same thing everywhere, for both Python and C++. The quality bar is the EXISTING tunable
+  `review.thresholds`; the only new knob is `eval_data.iterate_to_best.best_so_far_tie_break`
+  (both under existing config structures). "best" = meets the configured deterministic
+  thresholds OR the closest bounded attempt with an honest residual report, **not** provably
+  optimal code. See "Iterate-to-Best (Phase 5)" in section 3b and `docs/PROOF.md`.
 - **DEFERRED - auto-push / PR / MR / CI integration** and VS Code **marketplace extension**
   packaging (APIA stays strictly local; the user pushes manually).
 - **DEFERRED - Cross-team / org knowledge & capability sharing + plugins** (see Phase 4).

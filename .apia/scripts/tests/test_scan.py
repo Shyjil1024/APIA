@@ -640,6 +640,36 @@ def test_doctor_scanner_absence_is_non_gating():
     assert report["missing_required"] == []  # scanner category never gates
 
 
+# --- --json-only emits a clean, parseable JSON file --------------------------
+
+def test_json_only_emits_parseable_json(capsys):
+    """`--json-only` must print ONLY the JSON report (no human header), so the
+    redirected file parses as JSON and feeds straight into verify.py --findings.
+
+    This is the exact command USAGE.md / docs/PROOF.md document for the
+    iterate-to-best reproduction (scan ... --json-only > scan.json)."""
+    rc = scan.main([PYAPP, "--adapter", PY_ADAPTER, "--json-only"])
+    out = capsys.readouterr().out
+    # Non-zero exit reflects the gate decision (pyapp has findings); not asserted
+    # here. The output must be valid JSON with no leading human summary.
+    assert rc in (0, 1)
+    assert not out.lstrip().startswith("APIA scan ::")
+    report = json.loads(out)
+    assert "findings" in report
+    assert "gate" in report
+
+
+def test_json_still_emits_human_plus_json(capsys):
+    """Backward compatibility: `--json` keeps the dual human + JSON output."""
+    scan.main([PYAPP, "--adapter", PY_ADAPTER, "--json"])
+    out = capsys.readouterr().out
+    assert out.lstrip().startswith("APIA scan ::")
+    # The JSON report trails the human summary on the same stream.
+    brace = out.index("{")
+    report = json.loads(out[brace:])
+    assert "findings" in report
+
+
 # --- (h) static no-network / no-LLM guard ------------------------------------
 
 def test_scan_makes_no_network_or_llm_calls():

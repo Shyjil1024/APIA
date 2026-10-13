@@ -887,20 +887,71 @@ def decide_generation(spec, verify_result, findings, acceptance=None,
         state = evalloop.LoopState()
 
     cap = evalloop.resolve_max_iterations(repo_path)
+    verify_result = verify_result or {}
 
-    # (1) ANTI-CIRCULARITY GATE (reuse evalloop's predicate, not a copy). The
-    # caller may pass an explicit ``acceptance`` (a propose_acceptance_criteria
-    # result, possibly confirmed) or let us propose from the spec.
-    gate_on = evalloop.resolve_acceptance_criteria_gate(repo_path)
+    # The caller may pass an explicit ``acceptance`` (a propose_acceptance_criteria
+    # result, possibly confirmed) or let us propose from the spec. evaluate_quality_gated
+    # owns the anti-circularity gate itself; propose here so the decision has one.
     if acceptance is None:
         acceptance = evalloop.propose_acceptance_criteria(spec)
-    if gate_on and acceptance and not evalloop.acceptance_criteria_confirmed(acceptance):
+
+    # The GATE is still a thin pass-through to scan.apply_thresholds (unchanged).
+    gate = generation_gate(findings, repo_path=repo_path)
+
+    # DELEGATE the fused converged/continue/stop decision to the ONE shared
+    # function so "best" means the SAME thing here as in the standalone loop and
+    # the orchestrator. We do NOT re-run verify: generation already produced a
+    # verify_result in the live session, so we hand that result in as a
+    # precomputed ``cycle`` carrying the run_iteration_cycle shape. The
+    # HONEST-PARTIAL rule is preserved: an honest-partial shape is NEVER verify
+    # green, so the fused decision can never return green for it.
+    verify_green = bool(verify_result.get("ok")) and not verify_result.get("partial")
+    cycle = {
+        "status": "green" if verify_green else "needs_fix",
+        "iteration": None,
+        "remaining_iterations": None,
+        "summary": verify_result,
+        "eval_data": None,
+        # When not verify-green, hand the live model a structured failure report.
+        # scaffold's shape carries its own failure_reasons below; the shared
+        # function only needs a non-None report when the reviewer gate is absent.
+        "failure_report": None if verify_green else {
+            "ok": False,
+            "repo": verify_result.get("repo"),
+            "adapter": verify_result.get("adapter"),
+            "failing_phases": [],
+            "counts": {},
+            "regression_delta": None,
+            "golden_failures": [],
+            "invariant_violations": [],
+            "differential_regressions": [],
+            "partial": bool(verify_result.get("partial")),
+        },
+        "budget_advisory": None,
+    }
+
+    options = {
+        "acceptance": acceptance,
+        "findings": list(findings or []),
+        "cycle": cycle,
+    }
+    fused = evalloop.evaluate_quality_gated(repo_path, None, options=options,
+                                            state=state)
+
+    # Map the shared decision's status vocabulary back to decide_generation's
+    # contract (green | iterate | stop | ask) and attach the generation-specific
+    # keys (gate / verify / reason / failure_reasons) so the return contract and
+    # every existing key is preserved.
+    status = fused.get("status")
+
+    if status == "needs_confirmation":
         return {
             "status": "ask",
             "reason": "acceptance_criteria_unconfirmed",
-            "iteration": state.iteration,
-            "max_iterations": cap,
-            "remaining_iterations": max(cap - state.iteration, 0),
+            "iteration": fused.get("iteration"),
+            "max_iterations": fused.get("max_iterations"),
+            "remaining_iterations": max(
+                fused.get("max_iterations", cap) - fused.get("iteration", 0), 0),
             "acceptance": acceptance,
             "ask": (
                 "These acceptance criteria describe NEW behavior the generated "
@@ -911,21 +962,13 @@ def decide_generation(spec, verify_result, findings, acceptance=None,
             ),
         }
 
-    # Spend one iteration (identical to evalloop.evaluate's counter discipline).
-    state.iteration += 1
-
-    gate = generation_gate(findings, repo_path=repo_path)
-    verify_result = verify_result or {}
-    verify_green = bool(verify_result.get("ok")) and not verify_result.get("partial")
-
-    # (4) GREEN: both the gate and verification pass.
-    if gate["passed"] and verify_green:
+    if status == "green":
         return {
             "status": "green",
             "reason": "gate_passed_and_verified",
-            "iteration": state.iteration,
-            "max_iterations": cap,
-            "remaining_iterations": max(cap - state.iteration, 0),
+            "iteration": fused.get("iteration"),
+            "max_iterations": fused.get("max_iterations"),
+            "remaining_iterations": fused.get("remaining_iterations"),
             "gate": gate,
             "verify": verify_result,
             "acceptance": acceptance,
@@ -945,33 +988,40 @@ def decide_generation(spec, verify_result, findings, acceptance=None,
             reasons.append("verification did not pass (build/run/tests not all "
                            "green)")
 
-    # (2+3) RED at the HARD cap -> STOP; never silently ship a broken increment.
-    if state.iteration >= cap:
+    if status == "stop":
+        # Carry the BEST attempt + its residual summary through (additively) so
+        # the generation stop reaches PARITY with the standalone iterate stop:
+        # the shared decision already computed both, so surface them rather than
+        # a generic ask.
+        best_so_far = fused.get("best_so_far")
+        residual = evalloop._residual_summary(best_so_far)
         return {
             "status": "stop",
             "reason": "max_iterations_reached",
-            "iteration": state.iteration,
-            "max_iterations": cap,
+            "iteration": fused.get("iteration"),
+            "max_iterations": fused.get("max_iterations"),
             "remaining_iterations": 0,
             "gate": gate,
             "verify": verify_result,
             "failure_reasons": reasons,
+            "best_so_far": best_so_far,
             "ask": (
                 "Reached the hard max_iterations cap ({}) without a green, "
-                "gate-passing generation. The loop will NOT ship a broken "
-                "increment. How would you like to proceed -- adjust the spec, "
-                "relax a constraint, or stop for manual review?".format(cap)
+                "gate-passing generation. The BEST attempt so far: {}. The loop "
+                "will NOT ship a broken increment. How would you like to proceed "
+                "-- adjust the spec, relax a constraint, or stop for manual "
+                "review?".format(cap, residual)
             ),
             "state": state.to_dict(),
         }
 
-    # RED with budget remaining -> iterate: hand the failure back to the live model.
+    # needs_fix -> iterate: hand the failure back to the live model.
     return {
         "status": "iterate",
         "reason": "gate_or_verify_failed",
-        "iteration": state.iteration,
-        "max_iterations": cap,
-        "remaining_iterations": max(cap - state.iteration, 0),
+        "iteration": fused.get("iteration"),
+        "max_iterations": fused.get("max_iterations"),
+        "remaining_iterations": fused.get("remaining_iterations"),
         "gate": gate,
         "verify": verify_result,
         "failure_reasons": reasons,

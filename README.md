@@ -30,6 +30,21 @@ waits for you.
   model**; the off-model scripts call no model and the fix step is your live Copilot
   session only. New-behavior acceptance criteria need one human confirmation (the
   anti-circularity gate). See `docs/ARCHITECTURE.md` sections 3a-3c.
+- **Iterate-to-Best (green AND the reviewer gate), bounded and HONEST.** The iterate loop
+  no longer stops at merely "green" (tests pass): each iteration's acceptance criterion is
+  tests/build green **AND** the reviewer gate (`scan.apply_thresholds` vs
+  `review.thresholds`) passing. A single shared decision
+  (`evalloop.evaluate_quality_gated`) defines "best" once and is reused by all three entry
+  points (`verify.py --iterate` with `--findings`, the greenfield generation gate, the
+  orchestrator), for both Python and C++. On a failing gate the EXACT scanner findings fold
+  into the EXISTING structured failure report; the loop tracks **best-so-far** and, on the
+  hard `max_iterations` cap, STOPS and asks carrying the BEST attempt (not the last) plus a
+  specific residual summary. The quality bar is the tunable `review.thresholds`; the only
+  new knob is `eval_data.iterate_to_best.best_so_far_tie_break`. "best" means **meets your
+  configured deterministic thresholds, or the closest bounded attempt with an honest
+  residual report** - not provably optimal code (the ceiling is still the Copilot model, the
+  tests, and what the scanners detect). The scripts call no model; the per-iteration fix is
+  your live Copilot session. See `docs/ARCHITECTURE.md` section 3b and `docs/PROOF.md`.
 - **Continuous Reviewer (security / quality / perf / limitations).** An off-model
   engine (`.apia/scripts/scan.py`) runs real **local** scanners (bandit/pip-audit/
   ruff/flake8/radon; cppcheck/clang-tidy), normalizes their output into one canonical

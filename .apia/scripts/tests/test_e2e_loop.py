@@ -39,6 +39,7 @@ import ingest  # noqa: E402
 import verify  # noqa: E402
 import evaldata  # noqa: E402
 import evalloop  # noqa: E402
+import scan  # noqa: E402
 
 # Repo root is three levels up: .apia/scripts/tests/ -> repo.
 REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPTS_DIR))
@@ -486,3 +487,95 @@ def test_e2e_py_full_iterate_to_green_with_committed_golden(tmp_path):
     assert decisions[-1]["status"] == "stop", decisions[-1]
     assert decisions[-1]["reason"] == "max_iterations_reached"
     assert cap_state.iteration == 2  # never exceeded the cap
+
+
+# ===========================================================================
+# PHASE 5 -- ITERATE-TO-BEST: EXECUTED fused-loop proof (Python).
+#
+# This drives the SHARED fused decision (evalloop.evaluate_quality_gated) with a
+# REAL verify pass on samples/pyapp (its own green pytest suite runs for real via
+# the adapter's local command -- NOT a precomputed cycle, NOT mocked) fused with
+# the Phase-2 reviewer gate (scan.apply_thresholds against worked-example
+# scanner findings). The verify + gate + decision + cap + best-so-far machinery
+# is GENUINELY EXECUTED. The per-iteration code FIX is a LIVE Copilot action in
+# real use; here a SCRIPTED change to the findings list stands in for that fix
+# (clearly marked), exactly as prior phases materialized worked-example fixes.
+# ===========================================================================
+
+
+def _finding(sev, cat="security"):
+    """A worked-example normalized finding (scan.make_finding shape)."""
+    return scan.make_finding(sev, cat, "calc/operations.py", 1, "B000",
+                             "worked-example finding", "worked-example")
+
+
+def test_e2e_py_fused_loop_tests_green_but_gate_fails_then_fix_converges():
+    """EXECUTED: samples/pyapp's REAL pytest suite is GREEN, but the reviewer gate
+    FAILS on a worked-example HIGH finding => needs_fix with the finding folded
+    into the structured failure report; then a SCRIPTED fix clears the findings
+    (standing in for the LIVE Copilot fix) so the next iteration CONVERGES
+    (green verify + gate passes)."""
+    adapter = verify.load_adapter(ADAPTER)
+    bar = {"fail_on_severity": "high", "max_findings": {"security": 0}}
+    state = evalloop.LoopState()
+
+    # --- Iteration 1: REAL green verify, FAILING reviewer gate. ---
+    # No precomputed cycle: evaluate_quality_gated runs run_iteration_cycle ->
+    # verify.verify on samples/pyapp for real (layer1 disabled so only the test
+    # phases run; the sample suite is green).
+    needs_fix = evalloop.evaluate_quality_gated(
+        PYAPP, adapter,
+        {"adapter_path": ADAPTER, "layer1": False,
+         "findings": [_finding("high")], "thresholds": bar,
+         "max_iterations": 3},
+        state)
+    assert needs_fix["status"] == "needs_fix", needs_fix
+    report = needs_fix["failure_report"]
+    # The reviewer gate failed and the EXACT worked-example finding is folded in.
+    assert report["reviewer_gate"]["passed"] is False
+    assert report["scanner_findings"][0]["severity"] == "high"
+    # The pre-existing report keys survive (fused onto the SAME report shape).
+    for key in ("failing_phases", "counts", "golden_failures"):
+        assert key in report
+    assert state.iteration == 1
+
+    # --- SCRIPTED FIX (stands in for the LIVE Copilot fix): findings cleared. --
+    green = evalloop.evaluate_quality_gated(
+        PYAPP, adapter,
+        {"adapter_path": ADAPTER, "layer1": False, "findings": [],
+         "thresholds": bar, "max_iterations": 3},
+        state)
+    assert green["status"] == "green", green
+    assert green["reviewer_gate"]["passed"] is True
+    assert state.iteration == 2
+
+
+def test_e2e_py_fused_loop_never_converges_stops_with_best_so_far():
+    """EXECUTED: a never-clearing reviewer gate (worked-example findings that stay
+    high) over a REAL green verify hits the hard cap and STOPS with best-so-far +
+    a residual summary -- never looping forever, never silently accepting a
+    sub-threshold result."""
+    adapter = verify.load_adapter(ADAPTER)
+    bar = {"fail_on_severity": "high", "max_findings": {"security": 0}}
+    state = evalloop.LoopState()
+    decisions = []
+    for _ in range(10):  # far more than the cap of 2; must self-limit
+        d = evalloop.evaluate_quality_gated(
+            PYAPP, adapter,
+            {"adapter_path": ADAPTER, "layer1": False,
+             "findings": [_finding("high")], "thresholds": bar,
+             "max_iterations": 2},
+            state)
+        decisions.append(d)
+        if d["status"] == "stop":
+            break
+    final = decisions[-1]
+    assert final["status"] == "stop"
+    assert final["reason"] == "max_iterations_reached"
+    assert state.iteration == 2  # never exceeded the hard cap
+    assert final["best_so_far"] is not None
+    # The ask is specific and carries the best-so-far residual summary.
+    assert "max_iterations" in final["ask"]
+    assert "best attempt was iteration" in final["ask"]
+    # Residual summary groups by SEVERITY (the high finding), not category.
+    assert "high=1" in evalloop._residual_summary(final["best_so_far"])

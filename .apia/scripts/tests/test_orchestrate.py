@@ -37,6 +37,7 @@ if SCRIPTS_DIR not in sys.path:
 import orchestrate  # noqa: E402
 import evalloop  # noqa: E402
 import scaffold  # noqa: E402
+import scan  # noqa: E402
 
 
 # --- helpers -----------------------------------------------------------------
@@ -396,3 +397,106 @@ def test_orchestrate_makes_no_network_or_llm_calls():
     for token in forbidden:
         assert token not in src, \
             "orchestrate.py must not reference '{}'".format(token)
+
+
+# ===========================================================================
+# PHASE 5 -- ITERATE-TO-BEST verdict PARITY (the three-caller triple).
+# Identical inputs (same findings, same verify result, same resolved
+# review.thresholds, same cap) routed through all THREE callers must agree on
+# the reviewer-gate block AND the converged/needs_fix verdict, proving a SINGLE
+# shared decision (evalloop.evaluate_quality_gated):
+#   (a) evalloop.evaluate_quality_gated   -- the shared decision directly;
+#   (b) scaffold.decide_generation        -- the generation gate;
+#   (c) orchestrate.decide_task           -- the per-task orchestrator route.
+# These GENUINELY execute every production path (nothing mocked away).
+# ===========================================================================
+
+
+def _gen_cycle(verify_result):
+    """The SAME precomputed cycle scaffold.decide_generation builds from a
+    verify_result, so a direct evalloop call sees identical inputs."""
+    verify_green = bool(verify_result.get("ok")) and not verify_result.get("partial")
+    return {
+        "status": "green" if verify_green else "needs_fix",
+        "iteration": None, "remaining_iterations": None,
+        "summary": verify_result, "eval_data": None,
+        "failure_report": None if verify_green else {
+            "ok": False, "repo": verify_result.get("repo"),
+            "adapter": verify_result.get("adapter"), "failing_phases": [],
+            "counts": {}, "regression_delta": None, "golden_failures": [],
+            "invariant_violations": [], "differential_regressions": [],
+            "partial": bool(verify_result.get("partial")),
+        },
+        "budget_advisory": None,
+    }
+
+
+def test_decide_task_generation_gate_fail_parity_across_three_callers(tmp_path):
+    """A GREEN verify + a FAILING reviewer gate routed through all three callers
+    agrees on the reviewer-gate block and the not-converged verdict."""
+    acc = {"is_new_behavior": False}
+    verify_result = {"ok": True, "partial": False, "repo": "demo",
+                     "adapter": "python"}
+    findings = [scan.make_finding("high", "security", "x.py", 1, "B602",
+                                  "insecure call", "bandit")]
+    thresholds = scan.resolve_thresholds(scan.load_review_config())
+
+    # (a) the shared decision directly.
+    evalloop_dec = evalloop.evaluate_quality_gated(
+        None, None,
+        {"cycle": _gen_cycle(verify_result), "findings": findings,
+         "thresholds": thresholds, "acceptance": acc},
+        evalloop.LoopState())
+
+    # (b) scaffold.decide_generation.
+    scaffold_dec = scaffold.decide_generation(
+        {}, verify_result, findings, acceptance=acc, state=evalloop.LoopState())
+
+    # (c) orchestrate.decide_task (generation route) -- records scaffold's verdict
+    # verbatim, so it must carry the SAME gate + status.
+    task = {"id": "g1", "type": "generation"}
+    inputs = {"spec": {}, "verify_result": verify_result, "findings": findings,
+              "acceptance": acc, "state": evalloop.LoopState()}
+    task_dec = orchestrate.decide_task(task, str(tmp_path), inputs)
+
+    # Verdict parity: all three reach the SAME not-converged conclusion.
+    assert evalloop_dec["status"] == "needs_fix"
+    assert scaffold_dec["status"] == "iterate"
+    assert task_dec["verdict"]["status"] == "iterate"
+    assert task_dec["engine"] == "scaffold.decide_generation"
+
+    # Gate-block parity: the reviewer gate is IDENTICAL across all three.
+    shared_gate = evalloop_dec["failure_report"]["reviewer_gate"]
+    assert scaffold_dec["gate"] == shared_gate
+    assert task_dec["verdict"]["gate"] == shared_gate
+    assert shared_gate["passed"] is False
+
+
+def test_decide_task_generation_gate_pass_parity_across_three_callers(tmp_path):
+    """A GREEN verify + a PASSING reviewer gate converges to 'green' identically
+    across all three callers, with the SAME passing gate block."""
+    acc = {"is_new_behavior": False}
+    verify_result = {"ok": True, "partial": False, "repo": "demo",
+                     "adapter": "python"}
+    findings = [scan.make_finding("low", "quality", "a.py", 2, "E1", "m", "ruff")]
+    thresholds = scan.resolve_thresholds(scan.load_review_config())
+
+    evalloop_dec = evalloop.evaluate_quality_gated(
+        None, None,
+        {"cycle": _gen_cycle(verify_result), "findings": findings,
+         "thresholds": thresholds, "acceptance": acc},
+        evalloop.LoopState())
+    scaffold_dec = scaffold.decide_generation(
+        {}, verify_result, findings, acceptance=acc, state=evalloop.LoopState())
+    task = {"id": "g2", "type": "generation"}
+    inputs = {"spec": {}, "verify_result": verify_result, "findings": findings,
+              "acceptance": acc, "state": evalloop.LoopState()}
+    task_dec = orchestrate.decide_task(task, str(tmp_path), inputs)
+
+    assert evalloop_dec["status"] == "green"
+    assert scaffold_dec["status"] == "green"
+    assert task_dec["verdict"]["status"] == "green"
+    # The passing reviewer gate block is identical across all three.
+    assert scaffold_dec["gate"] == evalloop_dec["reviewer_gate"]
+    assert task_dec["verdict"]["gate"] == evalloop_dec["reviewer_gate"]
+    assert task_dec["verdict"]["gate"]["passed"] is True

@@ -358,6 +358,68 @@ stops immediately)`. When the cap is reached without going green the decision is
 `=> STOP (max_iterations_reached)` with a specific `ask`, and the harness exits non-zero so a
 proof can gate on it - **it never auto-applies a broken change.**
 
+### Iterate-to-Best: green AND the reviewer gate (Phase 5)
+
+Phase 5 fuses the iterate loop with the reviewer gate so each iteration targets tests/build
+green AND the reviewer gate (`scan.apply_thresholds` vs `review.thresholds`) passing, via the
+SINGLE shared decision `evalloop.evaluate_quality_gated(repo_path, adapter, options, state)`.
+
+**Executed vs. worked-example (read this first).** The **DECISION / threshold / cap /
+best-so-far / failure-report machinery is GENUINELY EXECUTED and asserted** in this sandbox.
+The per-iteration code **fix** is a LIVE Copilot action in real use; the tests materialize it
+as a scripted change to the findings list (a worked-example), exactly as the prior phases
+did for the code fix. The Python proof runs `samples/pyapp`'s real pytest; the C++ proof runs
+`samples/cppapp`'s real CMake + GoogleTest + CTest (guarded by
+`shutil.which('cmake')`/`shutil.which('ctest')`). Both were executed and pass here.
+
+What the executed tests assert against the shared decision:
+
+- **Fused acceptance.** Green verify + findings below the bar => `green` (the
+  `reviewer_gate` block rides along, no `failure_report`). Green verify + a finding at/above
+  `fail_on_severity` OR a security finding over its `max_findings` cap => `needs_fix` with the
+  EXACT `scan.apply_thresholds` block folded under `report['reviewer_gate']` and the EXACT
+  `make_finding` list under `report['scanner_findings']`, every pre-existing report key
+  preserved, JSON-serializable. A green-verify + failing-gate iteration still yields a report
+  (fail-loud).
+- **Best-so-far.** Driving one `LoopState` across three scripted iterations
+  (`2 high` / `1 medium` / `2 high`) under a `medium` bar tracks `state.best_so_far.iteration
+  == 2` (the lowest residual severity) and keeps it stable at 2 after iteration 3 regresses -
+  the BEST attempt, not the last.
+- **Cap / stop-and-ask.** `max_iterations=3` with never-clearing findings => `status: "stop"`,
+  `reason: "max_iterations_reached"`, the iteration counter never exceeds the cap, and the
+  `ask` names the cap AND "best attempt was iteration 2"; `best_so_far` carries iteration 2
+  and `_residual_summary` renders `medium=1` (residuals grouped by SEVERITY).
+- **Config tuning.** The same single `medium` finding FAILS `fail_on_severity: medium`
+  (`needs_fix`) and PASSES `fail_on_severity: critical` (`green`) - the quality bar is the
+  tunable `review.thresholds`.
+- **Three-caller parity.** Identical inputs through `evalloop.evaluate_quality_gated`,
+  `scaffold.decide_generation`, and `orchestrate.decide_task` agree on the gate block
+  (`scaffold.gate == evalloop reviewer_gate == task.verdict.gate`) and the verdict (evalloop
+  `needs_fix` == scaffold/orchestrate `iterate`; all `green` on a passing gate), so "best"
+  means the same thing at all three entry points.
+
+Reproducible headless commands (the Python flow; swap `cpp.yml`/`samples/cppapp` for C++):
+
+```bash
+# scan to get the real findings report (JSON only), then iterate against green AND the reviewer gate
+.venv/bin/python .apia/scripts/scan.py samples/pyapp \
+    --adapter .apia/adapters/python.yml --json-only > /tmp/scan.json
+.venv/bin/python .apia/scripts/verify.py samples/pyapp \
+    --adapter .apia/adapters/python.yml --iterate --max-iterations 3 \
+    --findings /tmp/scan.json --emit-failure-report --json
+```
+
+Observed (as asserted by the FEAT-003 tests): green pytest + an injected HIGH finding =>
+STOP at the cap with `best_so_far` + a specific residual ask (exit non-zero); the same run
+with no `--findings` => GREEN (exit 0, backward compatible). These demonstrations are encoded
+as pytest in `test_evalloop.py`, `test_scaffold.py`, `test_orchestrate.py`, `test_e2e_loop.py`
+and `test_cpp_e2e.py` so CI asserts them on every run.
+
+**Honest framing.** "best" = meets the user-configured deterministic thresholds (green tests
++ the reviewer gate) OR the closest bounded attempt with an honest residual report. It is
+**NOT** a guarantee of globally optimal or provably perfect code; the ceiling is the
+underlying Copilot model, the quality of the tests, and what the scanners can detect.
+
 ### Acceptance-criteria gate (anti-circularity)
 
 For acceptance criteria describing NEW behavior the code does not yet exhibit, `evaluate`

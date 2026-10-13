@@ -95,6 +95,22 @@ knowledge_dir: knowledge/
 # criteria that describe NEW behavior (not yet exhibited by the code) must be
 # human-confirmed before the loop is allowed to treat them as truth; otherwise the
 # agent could "pass" by grading itself against its own guess of the requirement.
+# iterate_to_best: Phase-5 ITERATE-TO-BEST knobs. The self-correction loop no
+# longer stops at merely "green" (tests pass); the fused acceptance decision
+# (evalloop.evaluate_quality_gated -- the ONE shared function the standalone loop,
+# the greenfield generation gate and the orchestrator all call) continues toward
+# "green tests AND the reviewer gate meets the configured review.thresholds"
+# (see the `review:` block below -- that SAME severity gate IS the quality bar;
+# tune "best" there). The loop is still bounded by `max_iterations` above: on the
+# cap it STOPS and asks, presenting the BEST attempt reached (fewest/lowest-
+# severity residual findings + fewest failing verify phases), never the last.
+# "best" means "meets the user-configured deterministic thresholds, or the
+# closest bounded attempt with an honest residual report" -- NOT a guarantee of
+# globally optimal code (the ceiling is still the Copilot model, the tests, and
+# what the scanners detect).
+#   best_so_far_tie_break  how to choose between two attempts that rank EQUALLY on
+#                          residual severity + failing-phase count:
+#                          fewest_findings (default) | latest | earliest.
 eval_data:
   trust_order:
     - characterization
@@ -102,16 +118,20 @@ eval_data:
     - invariant
     - differential
   acceptance_criteria_gate: true
+  iterate_to_best:
+    best_so_far_tie_break: fewest_findings
 
 # review: Phase-2 Reviewer policy + the COMPOSABLE severity gate. The off-model
 # scanner engine (.apia/scripts/scan.py) runs the per-stack scanners declared in
 # each adapter's `scanners:` section, normalizes their output into one canonical
 # finding shape {severity, category, file, line, rule, message, source_tool},
 # and calls apply_thresholds(findings, review.thresholds) to decide whether the
-# gate passes. BOTH the standalone reviewer AND the future greenfield-generation
-# gate read this SAME `thresholds` block, so the gate is composable without
-# rework (and the future iterate-to-best eval-loop fusion reuses it too). The
-# severity vocabulary is ordered: critical > high > medium > low > info.
+# gate passes. The standalone reviewer, the greenfield-generation gate AND the
+# Phase-5 iterate-to-best eval-loop fusion all read this SAME `thresholds` block
+# via the one shared evalloop.evaluate_quality_gated, so the gate is composable
+# without rework and "best" means the same thing everywhere -- tune the quality
+# bar HERE. The severity vocabulary is ordered: critical > high > medium > low >
+# info.
 #   thresholds.fail_on_severity  any finding at this severity or MORE severe
 #                                fails the gate (e.g. `high` fails on high +
 #                                critical).

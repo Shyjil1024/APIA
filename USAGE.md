@@ -291,9 +291,53 @@ back for the next fix. `--max-iterations N` overrides the config cap for a run (
 is **always** bounded by it). The command exits non-zero on any non-green decision so a
 preflight can gate on it.
 
+### Iterate-to-Best: green AND the reviewer gate
+
+By default `--iterate` targets **green** (tests pass). Pass `--findings <json>` to turn on
+the **reviewer gate** so the loop targets the stronger criterion **green AND the reviewer
+gate passes** - i.e. it iterates toward the BEST solution your thresholds define, not merely
+a passing test run. `--findings` accepts a raw findings list OR a `scan.py` report (which
+has a `findings` key), so you feed it the scanner output directly. Use
+`--json-only` to capture a clean JSON file (no human summary) you can redirect
+straight into `--findings`:
+
+```sh
+# 1) scan the repo and capture the findings report (JSON only, no human text)
+python3 .apia/scripts/scan.py <repo> --adapter .apia/adapters/python.yml --json-only > scan.json
+
+# 2) iterate against green AND the reviewer gate (same review.thresholds the reviewer uses)
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/python.yml \
+    --iterate --max-iterations 3 --findings scan.json --emit-failure-report --json
+```
+
+An iteration is accepted only when tests/build are green **and** the reviewer gate passes
+`review.thresholds`. On a failing gate the EXACT scanner findings
+(`{severity, category, file, line, rule, message, source_tool}`) are folded into the SAME
+structured failure report under `scanner_findings`, and the `apply_thresholds` block
+(`passed / fail_on_severity / failing_severities / failing_counts / reasons`) under
+`reviewer_gate`; you hand that back to the live session for the next fix. Without
+`--findings` the behavior is the unchanged tests-green path, so existing invocations are
+backward compatible.
+
+**Convergence vs. stop-and-ask.** The decision is:
+
+- `green` - tests/build green AND (when findings were supplied) the reviewer gate passes:
+  **converged, best reached.** The loop stops; proceed to APPLY (still human-gated).
+- `needs_fix` - a verify phase failed OR the reviewer gate failed; fix in the live session
+  and re-run the next cycle.
+- `needs_confirmation` - the acceptance-criteria gate is open (section above); surface the
+  ask and STOP.
+- `stop` (`reason: max_iterations_reached`) - the hard cap was hit without fully converging.
+  The loop STOPS and asks a **specific** question, carrying the **best-so-far** attempt (the
+  iteration with the fewest/lowest-severity residual findings + fewest failing verify
+  phases, **not** necessarily the last) and a residual summary grouped by severity
+  (e.g. `high=1`). It never loops forever and never silently accepts a sub-threshold result
+  as "best".
+
 **On VS 2022 (single agent):** run `/apia-iterate` and follow the Tier-0 protocol - the
-loop is fully expressible via Tier-0 + the Tier-1 prompt files, with no dependency on
-Tier-2 skills or custom agents.
+fused loop (green + the reviewer gate, best-so-far, bounded stop-and-ask) is fully
+expressible via Tier-0 + the Tier-1 prompt files as a single agent, with no dependency on
+Tier-2 skills or custom agents, for both Python and C++.
 
 ---
 
@@ -426,8 +470,39 @@ python3 .apia/scripts/scan.py <repo> --fail-on-severity high
 
 The command's exit code reflects the **gate** decision (`0` = gate passed), so a
 preflight can gate on it. The gate thresholds live in the `review` block of
-`.apia/config.yml`; both a standalone review and a future greenfield-generation gate
-read the **same** block.
+`.apia/config.yml`; the standalone review, the greenfield-generation gate, AND the
+iterate-to-best loop all read the **same** block.
+
+### Tuning the "best" quality bar
+
+The `review.thresholds` block is the single, tunable definition of "best" that the
+standalone reviewer, the generation gate, and the iterate-to-best loop
+(`verify.py --iterate --findings ...`) all share - so "best" means the same thing
+everywhere. Tune it in `.apia/config.yml`:
+
+```yaml
+review:
+  thresholds:
+    fail_on_severity: high      # any finding at this severity or MORE severe fails the gate
+    max_findings:
+      security: 0               # per-category caps (security/quality/perf) + optional total
+
+eval_data:
+  iterate_to_best:
+    best_so_far_tie_break: fewest_findings   # fewest_findings | latest | earliest
+```
+
+- Raise or lower `fail_on_severity` to move the bar (e.g. `critical` is more permissive than
+  `high`; `medium` is stricter). Add or tighten `max_findings` per-category caps.
+- `eval_data.iterate_to_best.best_so_far_tie_break` is the only iterate-to-best-specific
+  knob: when two attempts rank EQUALLY on residual severity + failing-phase count, it picks
+  `fewest_findings` (default), the `latest`, or the `earliest`.
+- The loop stays bounded by the HARD `max_iterations` cap regardless of the thresholds.
+
+Honest framing: "best" means **meets these configured deterministic thresholds (green tests
++ the reviewer gate), or the closest bounded attempt with an honest residual report** - it
+is **not** a guarantee of globally optimal or provably perfect code. The ceiling is still
+the Copilot model, the quality of your tests, and what the scanners can detect.
 
 ### Through Copilot
 
