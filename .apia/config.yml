@@ -194,7 +194,11 @@ generate:
 #   global_max_tasks  the GLOBAL stop bound: the maximum number of tasks a single
 #                     run may move to running/done before it HALTS fail-loud
 #                     (surfaces where it stopped and asks) rather than grinding on
-#                     indefinitely. Always a positive int.
+#                     indefinitely. Always a positive int. NOTE: this bounds tasks
+#                     that have STARTED, not tasks that have COMPLETED -- a task
+#                     counts against the budget the moment it moves to running and
+#                     keeps counting through done/failed, so set the cap by how
+#                     many tasks you want to allow to begin, not finish.
 #   run_state_dir     where the resumable run-state / audit-log documents live.
 #                     Relative to the .apia/ directory and COMMITTABLE (consistent
 #                     with knowledge_dir above), so a long autonomous run survives

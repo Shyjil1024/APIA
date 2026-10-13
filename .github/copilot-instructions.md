@@ -6,7 +6,8 @@ changes through a gated loop, **entirely on this Copilot session.**
 ## Hard constraints
 
 - **Never call an external/separate LLM API** (any chat/completions endpoint). All model
-  inference is this Copilot session; external **data** only via MCP / Copilot tool-use.
+  inference is this Copilot session; external **data** comes only via MCP / Copilot
+  tool-use, **never via a separate/external model call**.
 - **A human approves every stage transition.** Stop at each gate, summarize, and wait.
   Never skip a gate or chain stages.
 
