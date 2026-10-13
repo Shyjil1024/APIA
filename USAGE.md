@@ -110,7 +110,8 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | --- | --- | --- |
 | `.apia/config.yml` | Per-stage `token_budget`, the `confidence_threshold: 0.75` anti-hallucination gate, the `stacks` list, and `knowledge_dir`. The one file users commonly tune. | EDIT |
 | `.apia/adapters/python.yml` | Per-stack build/test command map for Python. **Complete** and fully supported today. | LEAVE (unless customizing) |
-| `.apia/adapters/cpp.yml`, `.apia/adapters/csharp.yml`, `.apia/adapters/groovy.yml` | Per-stack command maps for C++, C#, and Groovy. **Stubs** (`test_command: null`); the verify harness intentionally refuses to run against a stub. Fill these in to support those stacks. | EDIT (to enable the stack) |
+| `.apia/adapters/cpp.yml` | Per-stack command map for C++. **Complete** and supported today (CMake + MSBuild; GoogleTest/Catch2/CTest/VSTest; build-only phase; optional per-project override). The verify harness accepts it. | LEAVE (unless customizing) |
+| `.apia/adapters/csharp.yml`, `.apia/adapters/groovy.yml` | Per-stack command maps for C# and Groovy. **Stubs** (`test_command: null`); the verify harness intentionally refuses to run against a stub. Fill these in to support those stacks. | EDIT (to enable the stack) |
 | `.apia/scripts/ingest.py` | Off-model ingestion engine: static tree walk, manifest parse, test discovery, hashing. **No LLM/network calls.** Writes the knowledge base. | LEAVE |
 | `.apia/scripts/verify.py` | Off-model test/verify harness: existing-tests regression guard (with a real before/after baseline delta via `--baseline-only`) plus new tests. Refuses stub adapters. | LEAVE |
 | `.apia/knowledge/` | The cached, **committed** project knowledge base. Intentionally committed (not git-ignored) so it is shared across the team and survives sessions. | LEAVE (generated) |
@@ -138,9 +139,10 @@ delete them.
 
 - **An IDE with GitHub Copilot.** The **VS Code Agent Host** gives the richest
   experience: Tier-2 skills, custom agents, and `handoffs` (the approval gates)
-  all work. **JetBrains** and **Visual Studio** get the Tier-0 instructions and
-  Tier-1 prompt files only, so the loop still runs as a single agent following
-  the written protocol.
+  all work. **JetBrains** and **Visual Studio 2022** get the Tier-0 instructions
+  and Tier-1 prompt files only (no Tier-2 skills/agents), so the loop still runs
+  as a **single agent following the written protocol**. For a C++ project on
+  **VS 2022** this is the supported path (see the VS 2022 notes below).
 - **Python 3.9+** to run the off-model scripts.
 - **pytest** and **PyYAML**:
 
@@ -210,6 +212,70 @@ python3 .apia/scripts/verify.py <repo> --new-tests <path> --json
 The harness drives only the stack adapter's local test command and refuses to
 run against a stub adapter.
 
+---
+
+## C++ quickstart
+
+C++ is **supported today** via the complete `cpp.yml` adapter (CMake + MSBuild;
+GoogleTest/Catch2/CTest/VSTest). The portable default is **CMake + CTest**. From
+your C++ project root:
+
+```sh
+# 0) preflight the toolchain (offline): cmake/ctest/compilers + VS shell warning
+python3 .apia/scripts/ingest.py --doctor
+python3 .apia/scripts/verify.py --doctor <repo>
+
+# 1) learn the project (detects build system + test framework, writes project-facts)
+python3 .apia/scripts/ingest.py <repo>
+
+# 2) preview the plan without building or changing anything
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/cpp.yml --dry-run
+
+# 3) compile-only regression signal (no tests run) - works even with zero tests
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/cpp.yml --build-only
+
+# 4) capture the green baseline BEFORE your change
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/cpp.yml --baseline-only --json
+
+# 5) after the change: build + regression guard + the new tests
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/cpp.yml --json
+```
+
+The harness runs a **BUILD** phase first (does it still compile?), then the
+CTest-driven baseline/regression/new phases, parsing the adapter's
+`result_format` (`ctest`/`gtest`) into the same pass/fail counts as the Python
+path. If detection is wrong for an unusual layout, pin values in an optional
+`cpp:` block in `.apia/config.yml` (a documented fallback, never required). See
+`docs/PROOF.md` for a worked C++ walkthrough with real output.
+
+### Visual Studio 2022 notes
+
+VS 2022 honors **only Tier-0** (`.github/copilot-instructions.md`) **and Tier-1**
+(the `*.prompt.md` slash-commands) - not Tier-2 skills or custom agents. So on VS
+2022 you run the loop as a **single agent following the Tier-0 protocol**, invoking
+the prompt files per stage. **MSBuild and `cl` require the VS 2022 Developer
+Command Prompt** (or the Developer PowerShell); run the scripts from that shell so
+the toolchain is on `PATH`. `verify.py --doctor` warns when the Developer shell is
+not active.
+
+### Windows verification checklist (run on your own machine)
+
+The MSBuild/VSTest path cannot be executed in this Linux repo, so verify it on
+Windows yourself:
+
+1. Open the **VS 2022 Developer Command Prompt** (or Developer PowerShell).
+2. Confirm the toolchain is present: `cmake --version`, `msbuild -version`
+   (and `ctest --version` for the CMake path).
+3. Run the preflight: `python .apia\scripts\verify.py --doctor <repo>` and
+   confirm no required tool is reported missing.
+4. Run the **build-only** compile check:
+   `python .apia\scripts\verify.py <repo> --adapter .apia\adapters\cpp.yml --build-only`.
+5. Capture the baseline, then run the tests:
+   `python .apia\scripts\verify.py <repo> --adapter .apia\adapters\cpp.yml --baseline-only`
+   before your change, then `... --json` after it.
+6. Review the **before/after delta** the regression phase reports (passed/failed
+   counts vs. the baseline, and any removed tests) to confirm no regression.
+
 ### Tuning
 
 - Adjust `.apia/config.yml` to taste: raise or lower `confidence_threshold`
@@ -237,7 +303,12 @@ The five stages each pause at a **human-approval gate**:
 ## Stack support status
 
 - **Python** — fully supported today (`.apia/adapters/python.yml` is complete).
-- **C++, C#, Groovy** — adapter **stubs** (`test_command: null`). Fill in
+- **C++** — **first-class / supported today** (`.apia/adapters/cpp.yml` is
+  complete: CMake + MSBuild, GoogleTest/Catch2/CTest/VSTest, build-only phase,
+  optional per-project override). The CMake + GoogleTest + CTest path is proven by
+  execution; the MSBuild/VSTest path is unit-tested against fixtures (no Windows
+  toolchain in CI). The verify harness accepts the completed cpp adapter.
+- **C#, Groovy** — adapter **stubs** (`test_command: null`). Fill in
   `test_command` and the rest of the adapter to enable them.
 - **Any other language** — needs a new adapter under `.apia/adapters/`.
 

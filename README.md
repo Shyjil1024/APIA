@@ -50,9 +50,9 @@ knowledge is shared across the team and survives sessions.
 
 ## Primary stacks
 
-Python, C++, C#, and Groovy are first-class. **Python is the Phase-1 primary**
-(its adapter ships first); the others ship as adapter stubs and reach parity in
-Phase 2.
+Python, C++, C#, and Groovy are first-class. **Python and C++ are supported
+today** (C++ via CMake + MSBuild, with GoogleTest/Catch2/CTest/VSTest); C# and
+Groovy ship as adapter stubs and reach parity in Phase 2.
 
 ## Running the Phase-1 proof
 

@@ -30,7 +30,13 @@ Artifacts emitted into the knowledge directory:
     workflows.md       entrypoints / scripts that hint at business flows
     test-inventory.md  discovered test files and test functions
     stack.md           detected languages / frameworks
+    project-facts.md   persisted detection memory (build system, test framework,
+                       confidence, evidence, and a specific clarifying question
+                       when confidence is below threshold)
     .index.json        incremental cache: per-artifact source paths + hashes
+
+Optional preflight:
+    python3 .apia/scripts/ingest.py --doctor      # offline toolchain check
 """
 
 # NOTE: the imports below are standard-library only (plus the optional PyYAML
@@ -64,9 +70,18 @@ STACK_RULES = {
     },
     "cpp": {
         "manifests": ["CMakeLists.txt", "conanfile.txt", "conanfile.py", "Makefile"],
-        "manifest_globs": [],
+        "manifest_globs": ["*.vcxproj", "*.sln"],
         "extensions": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h"],
-        "frameworks": {},
+        # Marker substrings scanned (never executed) in manifests + bounded
+        # C/C++ sources, CMake files, and MSBuild project files. These implement
+        # the DETECT-FIRST principle: real project evidence, no guessing.
+        "frameworks": {
+            "googletest": ["gtest/gtest.h", "TEST(", "TEST_F(", "find_package(GTest", "gtest_main", "googletest"],
+            "catch2": ["catch2/catch.hpp", "catch_amalgamated", "TEST_CASE(", "find_package(Catch2"],
+            "ctest": ["enable_testing()", "add_test("],
+            "vstest": ["Microsoft.VisualStudio.TestTools", "[TestMethod]", "[TestClass]"],
+            "boost_test": ["boost/test/", "BOOST_AUTO_TEST_CASE", "BOOST_TEST"],
+        },
     },
     "csharp": {
         "manifests": [],
@@ -121,6 +136,7 @@ ARTIFACTS = [
     "workflows.md",
     "test-inventory.md",
     "stack.md",
+    "project-facts.md",
 ]
 
 INDEX_FILE = ".index.json"
@@ -232,36 +248,522 @@ def detect_stacks(repo_path, files):
         exts = {e: ext_counts[e] for e in rules["extensions"] if e in ext_counts}
         if not manifests and not exts:
             continue
-        frameworks = detect_frameworks(repo_path, files, manifests, rules["frameworks"])
-        detected[stack] = {
+        frameworks = detect_frameworks(repo_path, files, manifests, rules["frameworks"], stack=stack)
+        entry = {
             "manifests": sorted(set(manifests)),
             "extensions": exts,
             "source_count": sum(exts.values()),
             "frameworks": sorted(frameworks),
         }
+        if stack == "cpp":
+            # DETECT-FIRST: infer build system + score confidence from the real
+            # evidence so the (off-model) ingester can RECORD a specific
+            # clarifying question only when confidence is genuinely low.
+            entry["build_system"] = infer_build_system(files)
+            entry["decision"] = score_cpp_decision(
+                repo_path, files, sorted(set(manifests)), sorted(frameworks), entry["build_system"]
+            )
+        detected[stack] = entry
     return detected
 
 
-def detect_frameworks(repo_path, files, manifests, framework_rules):
-    """Scan manifests and a bounded set of source files for framework markers."""
-    found = set()
-    scan_targets = list(manifests)
-    # Also scan test files, where framework imports usually live.
-    for f in files:
+# Bounds for the C++ source/header marker scan. Detection must stay cheap and
+# deterministic, so we cap how many files and how many bytes per file we read.
+CPP_SCAN_FILE_CAP = 200
+CPP_SCAN_BYTES_CAP = 200000
+# C/C++ source + header + build-project extensions scanned for framework markers.
+_CPP_SCAN_EXTS = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h", ".vcxproj", ".sln", ".cs")
+
+
+def _cpp_scan_targets(files, manifests):
+    """Return a deterministic, bounded list of C++-relevant files to scan.
+
+    Includes CMake/manifest files (so find_package / enable_testing / add_test
+    markers are seen) plus bounded C/C++ sources and headers and MSBuild project
+    files. Pure path selection; nothing is opened here.
+    """
+    targets = []
+    seen = set()
+
+    def _add(rel):
+        if rel not in seen:
+            seen.add(rel)
+            targets.append(rel)
+
+    for m in manifests:
+        _add(m)
+    for f in sorted(files):
         base = os.path.basename(f)
-        if base.startswith("test_") or base.endswith("_test.py") or "tests" in f.split(os.sep):
-            scan_targets.append(f)
+        ext = os.path.splitext(f)[1].lower()
+        if base == "CMakeLists.txt" or base.endswith(".cmake"):
+            _add(f)
+        elif ext in _CPP_SCAN_EXTS:
+            _add(f)
+    return targets[:CPP_SCAN_FILE_CAP]
+
+
+def detect_frameworks(repo_path, files, manifests, framework_rules, stack=None):
+    """Scan manifests and a bounded set of source files for framework markers.
+
+    For Python the scan targets are manifests plus conventional test files. For
+    C++ (and any stack whose markers live in sources/headers/build files) we also
+    scan a bounded set of C/C++ sources, CMake files, and MSBuild project files so
+    GoogleTest/Catch2/CTest/Boost.Test/VSTest evidence is seen. Substring scan
+    only; no file is ever executed.
+    """
+    found = set()
+    if stack == "cpp":
+        scan_targets = _cpp_scan_targets(files, manifests)
+        byte_cap = CPP_SCAN_BYTES_CAP
+    else:
+        scan_targets = list(manifests)
+        # Also scan test files, where framework imports usually live.
+        for f in files:
+            base = os.path.basename(f)
+            if base.startswith("test_") or base.endswith("_test.py") or "tests" in f.split(os.sep):
+                scan_targets.append(f)
+        byte_cap = None
     for rel in scan_targets:
         full = os.path.join(repo_path, rel)
         try:
             with open(full, "r", encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
+                text = fh.read(byte_cap) if byte_cap is not None else fh.read()
         except (OSError, UnicodeError):
             continue
         for name, markers in framework_rules.items():
             if any(marker in text for marker in markers):
                 found.add(name)
     return found
+
+
+def infer_build_system(files):
+    """Infer the C++ build system from real project evidence (pure static).
+
+    Returns 'cmake' when a CMakeLists.txt is present, 'msbuild' when a .sln or
+    .vcxproj is present, else None. When BOTH are present, CMake wins (it is the
+    stronger, cross-platform signal) but both are noted by the caller via the
+    evidence list. Nothing is executed; this is filename inspection only.
+    """
+    has_cmake = any(os.path.basename(f) == "CMakeLists.txt" for f in files)
+    has_msbuild = any(
+        f.lower().endswith(".sln") or f.lower().endswith(".vcxproj") for f in files
+    )
+    if has_cmake and has_msbuild:
+        return "cmake"  # prefer CMake; caller records that both were seen
+    if has_cmake:
+        return "cmake"
+    if has_msbuild:
+        return "msbuild"
+    return None
+
+
+# Strong vs supporting markers for confidence scoring. Strong markers are
+# framework-specific and hard to see by accident; supporting markers (like a
+# bare add_test()) are weaker on their own.
+_CPP_STRONG_MARKERS = {
+    "googletest": ["gtest/gtest.h", "find_package(GTest", "gtest_main"],
+    "catch2": ["catch2/catch.hpp", "catch_amalgamated", "find_package(Catch2"],
+    "boost_test": ["boost/test/", "BOOST_AUTO_TEST_CASE"],
+    "vstest": ["Microsoft.VisualStudio.TestTools", "[TestMethod]", "[TestClass]"],
+    "ctest": ["enable_testing()", "add_test("],
+}
+
+
+def _collect_cpp_evidence(repo_path, files, manifests):
+    """Return a list of (file, marker) tuples for every C++ marker actually seen.
+
+    Deterministic and bounded (reuses the same scan targets / byte cap as
+    detection). Used both for confidence scoring and for the human-readable
+    evidence listing in project-facts.md.
+    """
+    rules = STACK_RULES["cpp"]["frameworks"]
+    evidence = []
+    for rel in _cpp_scan_targets(files, manifests):
+        full = os.path.join(repo_path, rel)
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read(CPP_SCAN_BYTES_CAP)
+        except (OSError, UnicodeError):
+            continue
+        for name, markers in rules.items():
+            for marker in markers:
+                if marker in text:
+                    evidence.append((rel, marker, name))
+    return evidence
+
+
+def _load_confidence_threshold(repo_path):
+    """Read confidence_threshold from .apia/config.yml, defaulting to 0.75.
+
+    Uses the same optional-PyYAML pattern as verify.load_adapter. Looks first at
+    the ingested repo's own .apia/config.yml, then falls back to the APIA
+    package config next to this script. Any failure -> the documented 0.75.
+    """
+    try:
+        import yaml  # optional; only used to read the declarative config
+    except ImportError:
+        yaml = None
+
+    candidates = [
+        os.path.join(repo_path, ".apia", "config.yml"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.yml"),
+    ]
+    if yaml is not None:
+        for cfg in candidates:
+            if os.path.isfile(cfg):
+                try:
+                    with open(cfg, "r", encoding="utf-8") as fh:
+                        data = yaml.safe_load(fh) or {}
+                    val = data.get("confidence_threshold")
+                    if isinstance(val, (int, float)):
+                        return float(val)
+                except (OSError, ValueError):
+                    continue
+    return 0.75
+
+
+def score_cpp_decision(repo_path, files, manifests, frameworks, build_system):
+    """Score the C++ build-system + test-framework decision in [0, 1].
+
+    Implements DETECT-FIRST / ASK-ONLY-ON-GENUINE-DOUBT / ASK-SPECIFICALLY:
+      * Multiple distinct strong markers for a real test framework (e.g. a gtest
+        include + find_package(GTest) + TEST(...)) => high confidence (>=0.75):
+        proceed and STATE the reasoning.
+      * Only a weak/ambiguous signal (e.g. add_test() present but no
+        gtest/catch/boost includes => looks like plain CTest with standalone
+        executables) => below threshold: record ONE specific clarifying
+        question. The ingester is off-model and never asks; it RECORDS the
+        question string for the model/user to see.
+
+    Returns a dict: {build_system, test_frameworks, confidence, evidence (list of
+    "file: marker" strings), reasoning, threshold, needs_clarification,
+    clarifying_question (str or None)}.
+    """
+    threshold = _load_confidence_threshold(repo_path)
+    evidence_pairs = _collect_cpp_evidence(repo_path, files, manifests)
+    evidence = ["{}: {}".format(rel, marker) for rel, marker, _ in evidence_pairs]
+
+    # Count distinct strong markers seen per framework.
+    strong_hits = {}
+    for rel, marker, name in evidence_pairs:
+        if marker in _CPP_STRONG_MARKERS.get(name, []):
+            strong_hits.setdefault(name, set()).add(marker)
+
+    # A real (non-ctest) framework is one of googletest/catch2/boost_test/vstest.
+    real_frameworks = [f for f in frameworks if f != "ctest"]
+    strong_real = {k: v for k, v in strong_hits.items() if k != "ctest"}
+
+    confidence = 0.0
+    reasoning = ""
+    clarifying_question = None
+
+    if strong_real:
+        # Highest-evidence real framework drives confidence.
+        best = max(strong_real.items(), key=lambda kv: len(kv[1]))
+        name, markers = best
+        n = len(markers)
+        if n >= 2:
+            confidence = 0.95
+        else:
+            confidence = 0.8
+        bump = " and build system '{}'".format(build_system) if build_system else ""
+        reasoning = (
+            "Found {} distinct strong {} marker(s) ({}){} -> proceeding with "
+            "test_framework '{}'.".format(n, name, ", ".join(sorted(markers)), bump, name)
+        )
+    elif real_frameworks:
+        # A real framework name matched only via weak markers (e.g. TEST( alone).
+        name = real_frameworks[0]
+        confidence = 0.7
+        reasoning = (
+            "Matched test_framework '{}' only via weak marker(s) (no "
+            "include/find_package evidence) -> below threshold.".format(name)
+        )
+        clarifying_question = _compose_cpp_question(build_system, frameworks, "weak")
+    elif "ctest" in frameworks:
+        # Classic ambiguous case: add_test()/enable_testing() but no framework
+        # include. Looks like plain CTest driving standalone executables.
+        confidence = 0.6
+        reasoning = (
+            "Found CTest wiring (enable_testing()/add_test()) but no "
+            "GoogleTest/Catch2/Boost.Test includes -> looks like plain CTest "
+            "with standalone executables; below threshold."
+        )
+        clarifying_question = _compose_cpp_question(build_system, frameworks, "ctest")
+    else:
+        confidence = 0.3
+        reasoning = "No conclusive test-framework evidence found."
+        clarifying_question = _compose_cpp_question(build_system, frameworks, "none")
+
+    needs_clarification = confidence < threshold
+    if not needs_clarification:
+        clarifying_question = None
+
+    return {
+        "build_system": build_system,
+        "test_frameworks": sorted(frameworks),
+        "confidence": round(confidence, 2),
+        "evidence": evidence,
+        "reasoning": reasoning,
+        "threshold": threshold,
+        "needs_clarification": needs_clarification,
+        "clarifying_question": clarifying_question,
+    }
+
+
+def _compose_cpp_question(build_system, frameworks, kind):
+    """Compose ONE specific, informed clarifying question (ASK-SPECIFICALLY).
+
+    Shows what was found, what was inferred, the uncertainty, and a best guess,
+    then asks the user to confirm, name the framework, or paste the exact test
+    command. Returned as a string; the off-model ingester only records it.
+    """
+    bs = build_system or "unknown"
+    if kind == "ctest":
+        return (
+            "I found add_test()/enable_testing() in CMake but no "
+            "GoogleTest/Catch2/Boost.Test includes - looks like plain CTest "
+            "running standalone executables (build system: {}), ~60% sure. "
+            "Is that right? If not, name the framework "
+            "(GoogleTest/Catch2/Boost.Test/VSTest) or paste the exact command "
+            "you use to run the tests.".format(bs)
+        )
+    if kind == "weak":
+        guessed = ", ".join(f for f in frameworks if f != "ctest") or "none"
+        return (
+            "I saw a possible test marker suggesting '{}' but no "
+            "include/find_package evidence to confirm it (build system: {}), "
+            "~70% sure. Is that the framework? If not, name the framework "
+            "(GoogleTest/Catch2/Boost.Test/VSTest) or paste the exact command "
+            "you use to run the tests.".format(guessed, bs)
+        )
+    return (
+        "I detected a C++ project (build system: {}) but found no conclusive "
+        "test-framework evidence (no GoogleTest/Catch2/Boost.Test/VSTest/CTest "
+        "markers). Which test framework does this project use, or what exact "
+        "command runs its tests?".format(bs)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Doctor / preflight toolchain check (cross-stack, offline, stdlib-only)
+# ---------------------------------------------------------------------------
+# Reusable so FEAT-003 can import and expose it from verify.py too. It locates
+# tools on PATH with shutil.which (no execution for presence) and reports a
+# version via a local `tool --version` subprocess (an allowed LOCAL command,
+# consistent with verify.py only ever spawning local build/test commands). It is
+# strictly offline: no network, no LLM.
+# Each tool entry is (exe, version_args, description, category). The CATEGORY
+# drives the doctor EXIT-CODE policy (not the warning text, which is always
+# emitted for every missing tool because it is useful):
+#   "cpp"      -> required for a C++ CMake/CTest run on ANY host.
+#   "core"     -> required on every host regardless of stack (git).
+#   "windows"  -> MSVC-toolchain tools that exist ONLY inside a VS Developer
+#                 shell on Windows; their absence is NEVER a hard failure on a
+#                 non-Windows host (or when the resolved run does not use them).
+#   "optional" -> nice-to-have / alternative-invocation tools whose absence must
+#                 never gate a run (e.g. a standalone `pytest` shim, since the
+#                 Python path invokes `python -m pytest`).
+DOCTOR_TOOLS = [
+    ("cmake", ["--version"], "CMake build system (C++ configure/build).", "cpp"),
+    ("ctest", ["--version"], "CTest test runner (C++).", "cpp"),
+    ("g++", ["--version"], "GNU C++ compiler.", "cpp"),
+    ("gcc", ["--version"], "GNU C compiler.", "optional"),
+    ("make", ["--version"], "GNU make.", "cpp"),
+    ("msbuild", ["-version"], "MSBuild (Windows/VS; present only inside a VS Developer shell).", "windows"),
+    # cl.exe has no `--version` flag: run with no args it prints its banner on
+    # stderr and exits non-zero, so there is no clean version line to parse. It
+    # is deliberately a PRESENCE-ONLY check (version_args == []): we report
+    # whether it is reachable, not a version string.
+    ("cl", [], "MSVC compiler cl.exe (Windows/VS Developer shell only; presence-only, no version probe).", "windows"),
+    ("git", ["--version"], "Git.", "core"),
+    ("pytest", ["--version"], "pytest (Python test runner).", "optional"),
+]
+# Tools that on Windows live only inside the "VS 2022 Developer Command Prompt".
+_VS_DEV_SHELL_TOOLS = {"msbuild", "cl"}
+
+# Categories whose ABSENCE should gate the doctor exit code when no specific
+# stack has been resolved. Windows/optional tools are intentionally excluded so
+# a complete C++ toolchain on a non-Windows host exits 0 even though msbuild/cl/
+# standalone-pytest are (correctly) missing. When a repo path IS supplied,
+# required_tool_categories() narrows this to the detected stack.
+_DEFAULT_REQUIRED_CATEGORIES = {"cpp", "core"}
+
+# Map a detected stack name -> the tool categories required to run it. "core"
+# (git) is always required. Unknown/other stacks fall back to "core" only.
+_STACK_REQUIRED_CATEGORIES = {
+    "cpp": {"cpp", "core"},
+}
+
+
+def _tool_entry_fields(entry):
+    """Normalize a DOCTOR_TOOLS entry to (exe, version_args, desc, category).
+
+    Accepts legacy 3-tuples (exe, version_args, desc) for backward compatibility
+    with callers/tests that predate the category field; such entries default to
+    the ``optional`` category so they never gate the exit code unexpectedly.
+    """
+    if len(entry) >= 4:
+        return entry[0], entry[1], entry[2], entry[3]
+    exe, version_args, desc = entry
+    return exe, version_args, desc, "optional"
+
+
+def required_tool_categories(repo_path=None):
+    """Return the set of tool categories whose absence should gate the exit code.
+
+    When ``repo_path`` resolves to a known stack (via detect_stacks), the
+    required set is that stack's categories; otherwise the cross-stack default
+    ({cpp, core}) is used. Windows-only and optional tools are never in the set,
+    so a healthy non-Windows C++ toolchain exits 0. This mirrors how
+    verify.preflight_missing_tool only checks the tools the resolved run uses.
+    """
+    if not repo_path or not os.path.isdir(repo_path):
+        return set(_DEFAULT_REQUIRED_CATEGORIES)
+    try:
+        files = walk_repo(repo_path)
+        stacks = detect_stacks(repo_path, files)
+    except Exception:  # detection is best-effort; never let it crash doctor
+        return set(_DEFAULT_REQUIRED_CATEGORIES)
+    required = {"core"}
+    for stack in stacks:
+        required |= _STACK_REQUIRED_CATEGORIES.get(stack, set())
+    return required or set(_DEFAULT_REQUIRED_CATEGORIES)
+
+
+def _tool_version(exe, version_args):
+    """Return the first non-empty line of `exe <version_args>` output, or None.
+
+    Runs a LOCAL subprocess only (no network). Any failure returns None. We never
+    execute project files here -- only the tool's own --version banner.
+    """
+    if not version_args:
+        return None
+    import subprocess  # stdlib; local process only, never a network call
+    try:
+        proc = subprocess.run(
+            [exe] + list(version_args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=15,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    out = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+    for line in out.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return None
+
+
+def doctor(tools=None, repo_path=None, required_categories=None):
+    """Offline toolchain preflight. Returns a dict report; also human-printable.
+
+    For each tool: locate it on PATH with shutil.which (NO execution needed to
+    determine presence), and when present report a version via a local
+    `tool --version`. Missing tools and the Windows VS-Developer-shell
+    requirement for MSBuild/cl are flagged as clear WARNINGS. Stdlib-only and
+    strictly offline.
+
+    EXIT-CODE POLICY (``missing_required``): a missing tool is only a hard
+    failure when its category is required for the resolved run. ``warnings``
+    still lists EVERY missing tool (the text is useful), but ``missing_required``
+    lists only the subset whose category gates the exit code. The required
+    categories are resolved from ``repo_path`` (its detected stack) when given,
+    else from ``required_categories``, else the cross-stack default
+    ({cpp, core}). Windows-only (msbuild/cl) and optional (standalone pytest,
+    gcc) tools are therefore never counted as failures on a non-Windows host.
+    """
+    import shutil  # stdlib; shutil.which is a PATH lookup, not a network call
+
+    if tools is None:
+        tools = DOCTOR_TOOLS
+    if required_categories is None:
+        required_categories = required_tool_categories(repo_path)
+    required_categories = set(required_categories)
+    results = []
+    warnings = []
+    missing_required = []
+    for entry in tools:
+        exe, version_args, desc, category = _tool_entry_fields(entry)
+        path = shutil.which(exe)
+        present = path is not None
+        # An empty version_args means the tool is checked presence-only (e.g.
+        # cl.exe has no clean --version banner). We never run it; we only report
+        # whether it is reachable.
+        version_probed = bool(version_args)
+        version = _tool_version(exe, version_args) if (present and version_probed) else None
+        is_required = category in required_categories
+        tool_entry = {
+            "tool": exe,
+            "present": present,
+            "path": path,
+            "version": version,
+            "version_probed": version_probed,
+            "description": desc,
+            "category": category,
+            "required": is_required,
+        }
+        if not present:
+            if exe in _VS_DEV_SHELL_TOOLS:
+                warn = (
+                    "WARNING: '{}' not found on PATH. On Windows it is available "
+                    "only inside the 'VS 2022 Developer Command Prompt' (the "
+                    "Developer shell sets up MSBuild/cl). Launch APIA from that "
+                    "shell for MSBuild/VSTest projects.".format(exe)
+                )
+            else:
+                warn = "WARNING: '{}' not found on PATH ({}).".format(exe, desc)
+            warnings.append(warn)
+            tool_entry["warning"] = warn
+            if is_required:
+                missing_required.append(exe)
+        results.append(tool_entry)
+    return {
+        "tools": results,
+        "warnings": warnings,
+        "missing_required": missing_required,
+        "required_categories": sorted(required_categories),
+    }
+
+
+def format_doctor_report(report):
+    """Render a doctor() report as a compact human-readable string."""
+    lines = ["APIA doctor / preflight (offline toolchain check)", ""]
+    for e in report["tools"]:
+        if e["present"]:
+            if not e.get("version_probed", True):
+                ver = "(presence-only; no version probe)"
+            else:
+                ver = e["version"] or "(version unavailable)"
+            lines.append("  [ok]   {:<8} {}  -> {}".format(e["tool"], e["path"], ver))
+        else:
+            tag = "required" if e.get("required") else "optional"
+            lines.append("  [MISS] {:<8} not found on PATH ({})".format(e["tool"], tag))
+    if report["warnings"]:
+        lines.append("")
+        lines.append("Warnings:")
+        for w in report["warnings"]:
+            lines.append("  - {}".format(w))
+    else:
+        lines.append("")
+        lines.append("All checked tools present.")
+    # The exit code gates only on REQUIRED tools; make that explicit so a
+    # non-Windows host with a healthy C++ toolchain reads as OK despite the
+    # (expected) msbuild/cl/standalone-pytest warnings above.
+    missing_required = report.get("missing_required")
+    if missing_required is not None:
+        lines.append("")
+        if missing_required:
+            lines.append(
+                "Preflight: FAIL -- missing required tool(s): {}.".format(
+                    ", ".join(missing_required)))
+        else:
+            lines.append(
+                "Preflight: OK -- all required tools present "
+                "(any warnings above are optional/other-platform tools).")
+    return "\n".join(lines) + "\n"
 
 
 def discover_tests(repo_path, files):
@@ -507,6 +1009,18 @@ def render_stack(repo_name, stacks):
         manifests = ", ".join(os.path.basename(m) for m in info["manifests"]) or "-"
         frameworks = ", ".join(info["frameworks"]) or "-"
         out += "| {} | {} | {} | {} |\n".format(name, info["source_count"], manifests, frameworks)
+    # Surface the C++ detected build system + framework + confidence beneath the
+    # table (as prose, so the table shape that existing tests assert is intact).
+    cpp = stacks.get("cpp")
+    if cpp and cpp.get("decision"):
+        d = cpp["decision"]
+        bs = cpp.get("build_system") or "unknown"
+        fw = ", ".join(d["test_frameworks"]) or "none"
+        out += "\n**C++ detection:** build system `{}`, test framework(s) `{}`, ".format(bs, fw)
+        out += "confidence {:.2f} (threshold {:.2f}).".format(d["confidence"], d["threshold"])
+        if d["needs_clarification"]:
+            out += " Confidence is below threshold - see `project-facts.md` for the specific question to ask."
+        out += "\n"
     return out
 
 
@@ -563,6 +1077,53 @@ def render_workflows(repo_name, workflows):
     return out
 
 
+def render_project_facts(repo_name, stacks):
+    """Render the persisted project-facts / detection-memory artifact.
+
+    This is the single source of truth for detected build system(s), test
+    framework(s), the confidence score, and the concrete evidence (file +
+    marker). When confidence < threshold it also carries the ONE specific
+    clarifying question the model/user should ask (DETECT-FIRST / ASK-ONLY-ON-
+    GENUINE-DOUBT / ASK-SPECIFICALLY). Persisting it here means APIA never has to
+    re-detect or re-ask for this project. Always emits a non-empty body, even
+    when there are no stack-specific facts (e.g. a pure-Python repo).
+    """
+    out = _header("Project facts", repo_name)
+    out += ("Persisted detection memory. These facts are the single source of "
+            "truth so APIA does not re-detect or re-ask on later runs.\n\n")
+
+    cpp = stacks.get("cpp") if stacks else None
+    if cpp and cpp.get("decision"):
+        d = cpp["decision"]
+        out += "## C++\n\n"
+        out += "- Build system: `{}`\n".format(cpp.get("build_system") or "unknown")
+        out += "- Test framework(s): {}\n".format(
+            ", ".join("`{}`".format(f) for f in d["test_frameworks"]) or "none detected"
+        )
+        out += "- Confidence: **{:.2f}** (threshold {:.2f})\n".format(d["confidence"], d["threshold"])
+        out += "- Decision: {}\n".format(d["reasoning"])
+        out += "\n### Evidence\n\n"
+        if d["evidence"]:
+            for ev in d["evidence"]:
+                out += "- `{}`\n".format(ev)
+        else:
+            out += "- (no marker evidence found)\n"
+        if d["needs_clarification"] and d["clarifying_question"]:
+            out += "\n### Clarifying question (confidence below threshold)\n\n"
+            out += "> {}\n".format(d["clarifying_question"])
+        else:
+            out += "\n_Confidence meets the threshold; proceeding without asking._\n"
+        out += (
+            "\n_To confirm/override these facts durably, record them under a "
+            "`cpp` overrides block in `.apia/config.yml`._\n"
+        )
+        return out
+
+    out += "No stack-specific detection facts recorded.\n\n"
+    out += "- build-system: n/a\n- test-framework: n/a\n"
+    return out
+
+
 def render_test_inventory(repo_name, tests):
     out = _header("Test inventory", repo_name)
     total = sum(len(t["functions"]) for t in tests)
@@ -595,6 +1156,31 @@ def build_source_index(repo_path, files):
         except OSError:
             continue
     return index
+
+
+def build_project_facts(stacks):
+    """Build the JSON-serializable persisted project-facts block for .index.json.
+
+    Captures, per detected stack where relevant, the build system, test
+    framework(s), confidence, threshold, evidence, reasoning, and (when below
+    threshold) the specific clarifying question. This is the durable detection
+    memory that lets a later ingest skip re-detection / re-asking.
+    """
+    facts = {}
+    cpp = stacks.get("cpp") if stacks else None
+    if cpp and cpp.get("decision"):
+        d = cpp["decision"]
+        facts["cpp"] = {
+            "build_system": cpp.get("build_system"),
+            "test_frameworks": d["test_frameworks"],
+            "confidence": d["confidence"],
+            "threshold": d["threshold"],
+            "evidence": d["evidence"],
+            "reasoning": d["reasoning"],
+            "needs_clarification": d["needs_clarification"],
+            "clarifying_question": d["clarifying_question"],
+        }
+    return facts
 
 
 def load_index(knowledge_dir):
@@ -677,6 +1263,7 @@ def ingest(repo_path, knowledge_dir, full=False):
         "pipelines.md": render_pipelines(repo_name, pipelines),
         "workflows.md": render_workflows(repo_name, workflows),
         "test-inventory.md": render_test_inventory(repo_name, tests),
+        "project-facts.md": render_project_facts(repo_name, stacks),
     }
 
     for name, content in rendered.items():
@@ -692,6 +1279,9 @@ def ingest(repo_path, knowledge_dir, full=False):
         "test_file_count": len(tests),
         "sources": new_sources,
         "artifacts": {name: ARTIFACTS for name in ["all"]},
+        # Persisted project-facts / detection memory so later ingests reuse the
+        # detected+confirmed facts instead of re-detecting or re-asking.
+        "project_facts": build_project_facts(stacks),
     }
     # Record, per artifact, which source paths it was derived from. For this
     # mechanical ingester every artifact is a view over the whole file set, so
@@ -723,11 +1313,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="APIA off-model ingestion engine (pure static analysis; no LLM/network calls)."
     )
-    parser.add_argument("repo_path", help="Path to the repository to ingest.")
+    parser.add_argument(
+        "repo_path",
+        nargs="?",
+        default=".",
+        help="Path to the repository to ingest (default: current directory).",
+    )
     parser.add_argument(
         "--full",
         action="store_true",
         help="Force a full re-ingest, ignoring the incremental cache.",
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run the offline toolchain preflight (shutil.which + local --version) and exit.",
     )
     parser.add_argument(
         "--knowledge-dir",
@@ -735,6 +1335,18 @@ def main(argv=None):
         help="Where to write knowledge artifacts (default: .apia/knowledge/).",
     )
     args = parser.parse_args(argv)
+
+    if args.doctor:
+        # Resolve required tools from the target repo's detected stack when the
+        # path is a real directory (so e.g. a C++ repo requires cmake/ctest but
+        # not msbuild on Linux). Falls back to the cross-stack default otherwise.
+        doctor_repo = args.repo_path if os.path.isdir(args.repo_path) else None
+        report = doctor(repo_path=doctor_repo)
+        print(format_doctor_report(report), end="")
+        # Non-zero exit ONLY when a REQUIRED tool is missing, so a preflight can
+        # gate a run without false-failing on absent optional/other-platform
+        # tools (msbuild/cl on Linux, a standalone pytest shim, etc.).
+        return 1 if report["missing_required"] else 0
 
     if not os.path.isdir(args.repo_path):
         parser.error("repo_path is not a directory: {}".format(args.repo_path))

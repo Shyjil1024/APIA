@@ -224,11 +224,23 @@ def test_stub_adapter_refused(tmp_path):
 
 
 def test_all_phase1_stub_adapters_refused(tmp_path):
+    # cpp.yml is completed in Phase 2 (FEAT-001/003) and is no longer a stub, so
+    # it must be ACCEPTED; the remaining Phase-1 stubs (csharp/groovy, null
+    # test_command) stay refused. This change is intentional (see FEAT-003).
     repo = _copy_pyapp(tmp_path)
-    for name in ("cpp.yml", "csharp.yml", "groovy.yml"):
+    for name in ("csharp.yml", "groovy.yml"):
         stub = os.path.join(REPO_ROOT, ".apia", "adapters", name)
         with pytest.raises(verify.StubAdapterError):
             verify.verify(repo, adapter_path=stub)
+
+    # Positive assertion: the COMPLETED cpp adapter is accepted (no StubAdapterError)
+    # and resolves its real ctest-driven command / build + ctest result format.
+    cpp = os.path.join(REPO_ROOT, ".apia", "adapters", "cpp.yml")
+    cpp_adapter = verify.load_adapter(cpp)
+    assert verify._test_command(cpp_adapter) == "ctest --test-dir build --output-on-failure"
+    plan = verify.resolve_plan(repo, adapter_path=cpp)
+    assert plan["result_format"] == "ctest"
+    assert plan["run_build"] is True
 
 
 def test_python_adapter_still_accepted(tmp_path):

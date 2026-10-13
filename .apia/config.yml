@@ -43,3 +43,22 @@ stacks:
 # this directory is committed so knowledge is shared across the team and survives
 # sessions. Path is relative to the .apia/ directory.
 knowledge_dir: knowledge/
+
+# cpp: OPTIONAL per-project C++ overrides (a FALLBACK, never required). APIA
+# detects the build system, test framework, and config first (see
+# .apia/adapters/cpp.yml); it falls back to the keys below only on genuine doubt
+# or for an unusual layout the detector gets wrong. Leave the block out entirely
+# for the default CMake + GoogleTest + CTest path -- verify.py consults these
+# keys only when present. All keys are optional:
+#   build_dir             non-default CMake build directory (default: build)
+#   cmake_path            absolute path to a specific cmake (default: on PATH)
+#   build_config          Debug | Release (default: Debug for iteration)
+#   build_system          cmake | msbuild to pin detection (default: detected)
+#   test_command_override full ctest/vstest command string that wins over the
+#                         adapter's default test_command
+# cpp:
+#   build_dir: build
+#   cmake_path: null
+#   build_config: Debug
+#   build_system: cmake
+#   test_command_override: null

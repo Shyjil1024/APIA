@@ -1,4 +1,4 @@
-# Phase-1 end-to-end proof (FEAT-004)
+# End-to-end proof (Python + C++)
 
 This document shows how to run and interpret the **objective, Copilot-free proof**
 that the APIA loop's mechanical stages work end-to-end on the sample repos. It maps
@@ -9,15 +9,17 @@ Everything here runs with **zero LLM/network calls**. The model stages (CLARIFY,
 and the *authoring* of MODIFY/TEST content) run on the user's Copilot session in a
 real session; this proof exercises the deterministic, off-model machinery that those
 stages drive: the ingester (`.apia/scripts/ingest.py`) and the verification harness
-(`.apia/scripts/verify.py`), both reading the Python stack adapter
-(`.apia/adapters/python.yml`).
+(`.apia/scripts/verify.py`), reading the Python adapter (`.apia/adapters/python.yml`)
+and the C++ adapter (`.apia/adapters/cpp.yml`).
 
-## What the two sample repos prove
+## What the sample repos prove
 
-| Sample | Starting state | Proves |
-|---|---|---|
-| `samples/pyapp` | Has a green test suite | Regression guard + new test for a worked change |
-| `samples/legacy_pyapp` | **No tests** (legacy) | Characterization tests pin current behavior, then a safe change keeps them green + a new test passes |
+| Sample | Stack | Starting state | Proves |
+|---|---|---|---|
+| `samples/pyapp` | Python | Has a green test suite | Regression guard + new test for a worked change |
+| `samples/legacy_pyapp` | Python | **No tests** (legacy) | Characterization tests pin current behavior, then a safe change keeps them green + a new test passes |
+| `samples/cppapp` | C++ (CMake + GoogleTest) | Has a green test suite | Build-only compile check + CTest regression guard + a worked change with a real before/after delta |
+| `samples/legacy_cppapp` | C++ (CMake + GoogleTest) | Originally **no tests** | Characterization tests pin current behavior; build-only is the regression signal before they exist |
 
 ## Prerequisites
 
@@ -130,6 +132,143 @@ This returns no hits (any match is in prohibiting prose only).
 Out of scope for this off-model proof: APPLY is the human-gated commit/PR, which the
 orchestrator performs. The harness leaves the samples in a committable, green state.
 
+---
+
+## C++ proof walkthrough (CMake + GoogleTest + CTest)
+
+The C++ proof mirrors the Python one, through the same five stages, driven by the
+completed C++ adapter (`.apia/adapters/cpp.yml`). GoogleTest is pulled in via CMake
+**FetchContent** (pinned `v1.14.0`), so the samples are self-contained.
+
+### Executed in-sandbox vs. unit-tested only (read this first)
+
+- **EXECUTED for real in this Linux sandbox:** the **CMake + GoogleTest + CTest**
+  path. The commands below were run and their output captured; FetchContent clones
+  GoogleTest `v1.14.0` on the first configure.
+- **UNIT-TESTED against captured fixture strings only (never executed):** the
+  **MSBuild / VSTest** command-assembly and output parsing. There is **no Windows
+  MSVC/MSBuild/VSTest toolchain in this sandbox**, so that path is proven by
+  fixture-based parser tests in `.apia/scripts/tests/test_cpp_e2e.py`, not by a run.
+  Verify it yourself on Windows with the checklist in `USAGE.md`.
+
+### Step 1 - INGEST: detection + project-facts + confidence
+
+```bash
+.venv/bin/python .apia/scripts/ingest.py samples/cppapp
+```
+
+Walks the repo and writes the `.apia/knowledge/` artifacts, including
+`project-facts.md`. **Interpretation:** `stack.md` reports `cpp`; `project-facts.md`
+records the detected build system (**CMake**, from `CMakeLists.txt`) and test
+framework (**GoogleTest via CTest**, from `*_test.cpp` + FetchContent) with a
+**confidence score** vs. `confidence_threshold` (0.75). When confidence is below
+threshold it records a precomposed, specific clarifying question instead of guessing.
+
+Preflight the toolchain offline at any time. Passing the repo path lets the
+doctor resolve which tools are **required** for that repo's detected stack (a C++
+repo requires cmake/ctest/g++/make, not the Windows-only msbuild/cl):
+
+```bash
+.venv/bin/python .apia/scripts/verify.py --doctor samples/cppapp
+```
+
+Captured output (exit code **0** on this Linux host: every *required* C++ tool is
+present, and the absent msbuild/cl/standalone-pytest are warned as
+optional/other-platform, not counted as failures):
+
+```
+--doctor => cmake 3.22.2 / ctest 3.22.2 / g++ 11.5 / gcc / make / git present
+            WARNS msbuild/cl (VS 2022 Developer Command Prompt) + standalone pytest missing
+            Preflight: OK -- all required tools present (warnings are optional/other-platform)
+```
+
+### Steps 2-3 - CLARIFY / MODIFY: the worked change (dry-run)
+
+As with Python, the model-driven stages are materialized as a committed worked
+example for reproducibility: `samples/cppapp` gains a new function (covered by a new
+GoogleTest case) without altering existing behavior. Preview exactly what the
+verification WOULD run, changing nothing:
+
+```bash
+.venv/bin/python .apia/scripts/verify.py samples/cppapp \
+    --adapter .apia/adapters/cpp.yml --dry-run
+```
+
+Captured output:
+
+```
+--dry-run => lists build / baseline / regression planned commands + reasoning
+             (result_format: ctest); writes nothing; spawns nothing.
+```
+
+### Step 4 - TEST: build-only, then CTest baseline / regression / new
+
+For C++ the harness runs a **BUILD** phase first (does it still compile?), then the
+CTest-driven phases. Build-only on its own is the regression signal when there are
+no tests yet:
+
+```bash
+.venv/bin/python .apia/scripts/verify.py samples/cppapp \
+    --adapter .apia/adapters/cpp.yml --build-only
+```
+
+```
+--build-only => [PASS] build compiled OK => ALL GREEN (no tests executed)
+```
+
+Full run (build + baseline + regression) on the green sample:
+
+```bash
+.venv/bin/python .apia/scripts/verify.py samples/cppapp \
+    --adapter .apia/adapters/cpp.yml --json
+```
+
+Captured human summary:
+
+```
+[PASS] build      compiled OK
+[PASS] baseline   5 passed, 0 failed, 0 error, 0 skipped
+[PASS] regression 5 passed, 0 failed, 0 error, 0 skipped
+=> ALL GREEN  (result_format=ctest)
+```
+
+### Real before/after delta
+
+Capture the green baseline **before** the change with `--baseline-only`, then run
+again after it. Captured delta (a new test added, no existing behavior changed):
+
+```
+before/after delta => passed +1 (5 -> 6); removed 0 node(s)
+                   => no regression vs. baseline => ALL GREEN
+```
+
+And a genuine regression is caught - break an existing `EXPECT_EQ`:
+
+```
+[FAIL] baseline 4 passed, 1 failed; baseline delta: passed -1 (5 -> 4)
+=> REGRESSION => VERIFICATION FAILED
+```
+
+### Characterization-first C++ case
+
+`samples/legacy_cppapp` was **originally untested**. Its committed GoogleTest
+characterization suite pins the current behavior (quirks included, e.g.
+`apply_discount` does no validation) **before** a new `reorder_quantity` function is
+added. Until those tests exist, `--build-only` is the only regression signal; once
+they do, the regression + new phases run exactly as above. All stay green across the
+safe change, proving behavior was preserved.
+
+> Maps to **Stage 4 TEST** for C++: build-only compile check + CTest regression guard
+> + new verification + the characterization-first legacy path, all via the cpp adapter.
+
+### Step 5 - APPLY (C++)
+
+Same as Python: APPLY is the human-gated commit, which the orchestrator performs. The
+harness leaves the samples in a committable, green state and the generated `build/`
+directories are gitignored.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:
@@ -144,3 +283,11 @@ green; then does the same for `samples/legacy_pyapp` (characterization + new). I
 subprocess with each sample as the working directory, so each sample's own
 `pyproject.toml` `pythonpath=["."]` applies regardless of the outer pytest rootdir.
 A passing run of this file **is** the Phase-1 milestone proof.
+
+`.apia/scripts/tests/test_cpp_e2e.py` adds the C++ coverage: fixture-based unit tests
+for the ctest/gtest/msbuild(VSTest) parsers (so the MSBuild/VSTest path is proven
+without a Windows toolchain), `--dry-run` and `--build-only` behavior, and - guarded by
+`shutil.which('cmake')`/`shutil.which('ctest')` so the suite stays portable - the real
+CMake + GoogleTest + CTest loop on `samples/cppapp` (build + baseline + regression green
+with >= 3 passed, a before/after delta that catches a broken existing test) plus the
+`samples/legacy_cppapp` characterization path. These RUN and pass in this sandbox.

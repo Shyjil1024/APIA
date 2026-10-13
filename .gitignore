@@ -7,6 +7,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# CMake build output for the C++ samples (generated; never committed).
+samples/**/build/
+CMakeCache.txt
+CMakeFiles/
+
 # NOTE: .apia/knowledge/ is intentionally NOT ignored. The cached project
 # knowledge base is committed so it is shared across the team and survives
 # sessions (see docs/ARCHITECTURE.md section 1).

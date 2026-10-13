@@ -1,0 +1,38 @@
+// Characterization test (APIA, C++/GoogleTest).
+//
+// APIA generated this to PIN THE CURRENT behavior of untested/legacy code BEFORE any
+// change, so regressions become detectable. A characterization test documents what the
+// code *does today*, not what it *should* do - fill the expected values with the
+// observed output of the current implementation (capture it by running the code), then
+// run the suite to confirm the baseline is green before modifying.
+//
+// Placeholders (replace when generating):
+//   {{HEADER_INCLUDE}}   e.g. ``#include "mathops.h"``
+//   {{SUBJECT}}          short name of the unit under characterization, e.g. ``add``
+//   {{CASE_NAME}}        PascalCase description of the case, e.g. ``AddsTwoPositives``
+//
+// This template is referenced by .apia/adapters/cpp.yml
+// (``characterization_test_template``) and used by the apia-test-authoring skill.
+// It performs NO network or LLM calls.
+
+#include <gtest/gtest.h>
+
+{{HEADER_INCLUDE}}
+
+
+TEST({{SUBJECT}}, {{CASE_NAME}}) {
+    // Arrange: inputs that exercise the current behavior.
+    // Act: call the unit under characterization.
+    auto result = {{SUBJECT}}(/* TODO: supply representative arguments */);
+
+    // Assert: the OBSERVED current output (captured by running the code today),
+    // not the desired/ideal output. This pins the baseline.
+    EXPECT_EQ(result, 0 /* TODO: replace with the value observed from current code */);
+}
+
+
+TEST({{SUBJECT}}, RaisesCharacterizedError) {
+    // Pin any current error/throw behavior so a change that alters it is caught.
+    // TODO: narrow EXPECT_ANY_THROW to the actual exception type with EXPECT_THROW.
+    EXPECT_ANY_THROW({{SUBJECT}}(/* TODO: inputs that currently throw */));
+}

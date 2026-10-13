@@ -1,40 +1,66 @@
-# APIA stack adapter: C++ (STUB -- Phase-2 fills to parity with python.yml).
+# APIA stack adapter: C++ (Phase-2, fully implemented to parity with python.yml).
 #
-# Documented placeholder. Same schema as python.yml (see
-# .apia/adapters/README.md). Commands are TODO markers, not runnable yet. This
-# adapter performs NO model inference and NO network/LLM calls.
+# An adapter is a declarative command map that tells the APIA loop how to build,
+# test, and author tests for a given stack. It contains NO model inference and
+# issues NO network/LLM calls; it is read by the off-model scripts and by the
+# Tier-2 skills/agents so stage behavior is stack-aware. See
+# .apia/adapters/README.md for the schema contract.
+#
+# This adapter is ADAPTIVE, not hard-coded to any one project. The top-level
+# test_command/build_command are the portable CMake + CTest defaults (so a plain
+# `verify.py <repo> --adapter cpp.yml` works on the proof sample). The
+# `build_systems` and `test_frameworks` sections below are what FEAT-003 selects
+# from once ingest has detected the project's real facts (CMake vs MSBuild;
+# GoogleTest / Catch2 / Boost.Test / CTest / VSTest). All commands are treated
+# as full strings so absolute tool paths (e.g. a full path to msbuild.exe) are
+# tolerated as-is.
 
 name: cpp
 primary: false
 language: C++
 
-# TODO(phase-2): pick the project's build/test runner. Common choices:
-#   - CMake + CTest:      "ctest --test-dir build"
-#   - GoogleTest/Catch2 built via CMake, then CTest drives them.
-test_command: null            # TODO(phase-2): e.g. "ctest --test-dir build --output-on-failure"
+# How the TEST stage runs the project's existing tests (regression guard) and
+# any newly generated tests. Run from the repository root. Default is the
+# portable CMake + CTest path; FEAT-003 overrides this from `test_frameworks`
+# when a non-CTest framework/build system is detected.
+test_command: "ctest --test-dir build --output-on-failure"
 
-test_discovery_glob:          # TODO(phase-2): refine per test framework/layout
+# Glob(s) the ingester / tester use to discover test files for this stack.
+test_discovery_glob:
   - "**/*_test.cpp"
   - "**/test_*.cpp"
   - "test/**/*.cpp"
   - "tests/**/*.cpp"
 
+# How to decide a repo (or touched area) has "no tests" -> trigger the
+# characterization-test path before modifying (legacy case). "No tests" means
+# zero files match test_discovery_glob (equivalently, CTest lists 0 tests).
 no_tests_detection:
-  description: "TODO(phase-2): no files match test_discovery_glob / ctest lists 0 tests."
-  collect_command: null       # TODO(phase-2): e.g. "ctest --test-dir build -N"
-  zero_tests_signal: null     # TODO(phase-2): e.g. "Total Tests: 0"
+  description: "No files match test_discovery_glob (CTest lists 0 tests: 'Total Tests: 0')."
+  collect_command: "ctest --test-dir build -N"
+  zero_tests_signal: "Total Tests: 0"
 
-characterization_test_template: null  # TODO(phase-2): add GoogleTest/Catch2 template
+# Template reference used by the apia-test-authoring skill when it must generate
+# characterization tests (pin current behavior) or new behavior tests. The path
+# is relative to the package root; the skill resolves and fills it in.
+characterization_test_template: ".github/skills/apia-test-authoring/templates/cpp_characterization_test.cpp.tmpl"
 
-build_command: null           # TODO(phase-2): e.g. "cmake -S . -B build && cmake --build build"
-lint_command: null            # TODO(phase-2): e.g. "clang-tidy"
+# Build / compile command. Default is the portable CMake configure+build; the
+# `build_systems` section carries the per-build-system detail FEAT-003 selects.
+build_command: "cmake -S . -B build && cmake --build build"
 
+# Advisory lint command; skipped if the tool is absent. clang-tidy needs a
+# compile database (CMAKE_EXPORT_COMPILE_COMMANDS); treated as best-effort.
+lint_command: "clang-tidy"
+
+# Manifests that identify a C++ project (mirrors ingest.py STACK_RULES['cpp']).
 manifests:
   - CMakeLists.txt
   - conanfile.txt
   - conanfile.py
   - Makefile
 
+# Source file extensions for this stack (mirrors ingest.py STACK_RULES['cpp']).
 extensions:
   - ".cpp"
   - ".cc"
@@ -43,7 +69,116 @@ extensions:
   - ".hh"
   - ".h"
 
-frameworks:                   # TODO(phase-2): confirm per project
+# Test frameworks recognized for this stack (first = default). See
+# `test_frameworks` below for the per-framework run command + result_format.
+frameworks:
   - googletest
   - catch2
   - ctest
+  - boost_test
+  - vstest
+
+# ---------------------------------------------------------------------------
+# ADAPTIVE build systems. FEAT-002 detection picks one by inspecting manifests
+# (CMakeLists.txt -> cmake; a .sln/.vcxproj -> msbuild). FEAT-003 assembles the
+# configure/build commands from the selected entry. `config` selects the build
+# configuration (Debug for characterization/iteration, Release for a final
+# regression check). Commands are full strings, so an absolute tool path (e.g.
+# "/opt/cmake/bin/cmake" or "C:/.../msbuild.exe") drops in unchanged.
+# ---------------------------------------------------------------------------
+build_systems:
+  cmake:
+    detect_manifests:
+      - CMakeLists.txt
+    build_dir: build
+    config: Debug            # default working config; use Release for final guard
+    configs:
+      - Debug
+      - Release
+    configure_command: "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug"
+    build_command: "cmake --build build --config Debug"
+    # Multi-config generators (e.g. Visual Studio) ignore CMAKE_BUILD_TYPE at
+    # configure time and honor --config at build time; single-config generators
+    # (Makefiles/Ninja) honor CMAKE_BUILD_TYPE. Keeping both is portable.
+  msbuild:
+    detect_manifests:
+      - "*.sln"
+      - "*.vcxproj"
+    build_dir: null          # MSBuild builds in-tree; no separate build dir
+    config: Debug
+    configs:
+      - Debug
+      - Release
+    # NOTE: no MSVC/MSBuild toolchain exists in the Linux sandbox; this path is
+    # command-assembly only (unit-tested against fixture strings by FEAT-003),
+    # never executed here. `msbuild` may be an absolute path to msbuild.exe.
+    configure_command: null  # MSBuild has no separate configure step
+    build_command: "msbuild /t:Build /p:Configuration=Debug"
+
+# ---------------------------------------------------------------------------
+# ADAPTIVE test frameworks. FEAT-003 selects an entry from the framework ingest
+# detected and uses `run_command` to execute tests + `result_format` to decide
+# which output parser to apply (ctest | gtest | msbuild). `zero_tests_signal`
+# is the substring that means "no tests were run" for that runner.
+# ---------------------------------------------------------------------------
+test_frameworks:
+  # GoogleTest discovered + driven by CTest (the proof sample's path).
+  googletest:
+    run_command: "ctest --test-dir build --output-on-failure"
+    collect_command: "ctest --test-dir build -N"
+    result_format: ctest
+    zero_tests_signal: "Total Tests: 0"
+  # Catch2 registered with CTest via catch_discover_tests.
+  catch2:
+    run_command: "ctest --test-dir build --output-on-failure"
+    collect_command: "ctest --test-dir build -N"
+    result_format: ctest
+    zero_tests_signal: "Total Tests: 0"
+  # Plain CTest (any tests registered via add_test), framework-agnostic.
+  ctest:
+    run_command: "ctest --test-dir build --output-on-failure"
+    collect_command: "ctest --test-dir build -N"
+    result_format: ctest
+    zero_tests_signal: "Total Tests: 0"
+  # Running a GoogleTest binary directly (no CTest) -> parse gtest console output.
+  gtest_binary:
+    run_command: "./build/tests --gtest_color=no"
+    collect_command: "./build/tests --gtest_list_tests"
+    result_format: gtest
+    zero_tests_signal: "[==========] Running 0 tests"
+  # Boost.Test, typically registered with CTest.
+  boost_test:
+    run_command: "ctest --test-dir build --output-on-failure"
+    collect_command: "ctest --test-dir build -N"
+    result_format: ctest
+    zero_tests_signal: "Total Tests: 0"
+  # MSVC VSTest for MSBuild projects. Command-assembly only in this sandbox
+  # (no VSTest toolchain); `vstest.console.exe` may be an absolute path.
+  vstest:
+    run_command: "vstest.console.exe build/Debug/tests.dll"
+    collect_command: "vstest.console.exe build/Debug/tests.dll /ListTests"
+    result_format: msbuild
+    zero_tests_signal: "Total tests: 0"
+
+# ---------------------------------------------------------------------------
+# OPTIONAL per-project override (FALLBACK, not a requirement).
+#
+# DETECT FIRST: APIA detects the build system, framework, and config above and
+# only falls back here on genuine doubt. If detection is wrong for an unusual
+# layout, a project may pin values in .apia/config.yml under a `cpp:` block,
+# e.g.:
+#
+#   cpp:
+#     build_dir: out            # non-default CMake build directory
+#     cmake_path: /opt/cmake/bin/cmake
+#     config: Release
+#     test_command_override: "ctest --test-dir out --output-on-failure"
+#
+# These keys are intentionally left commented here: they are a documented
+# escape hatch, consumed only when present, never required for the default
+# CMake + GoogleTest + CTest path to work.
+# override:
+#   build_dir: null
+#   cmake_path: null
+#   config: null
+#   test_command_override: null

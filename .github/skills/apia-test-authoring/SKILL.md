@@ -13,26 +13,35 @@ stage runs in a **forked context** for token isolation.
 
 1. **Load the stack adapter** `.apia/adapters/<stack>.yml` for the detected stack and
    read `test_command`, `test_discovery_glob`, `no_tests_detection`, and
-   `characterization_test_template`.
+   `characterization_test_template`. The **C++** adapter (`cpp.yml`) is complete: it
+   selects a build system (CMake or MSBuild) and a test framework and carries a
+   `result_format` per framework - `ctest` (GoogleTest/Catch2/CTest via CTest) or
+   `gtest` (a GoogleTest binary run directly) - so the harness parses the right output.
 
-2. **Regression guard.** Run the existing tests via the adapter's `test_command` to
+2. **Build-only compile check (C++).** For C++, run the adapter's `build_command`
+   first (`verify.py <repo> --build-only`) to confirm the project still compiles. This
+   is the only regression signal when a C++ project has no tests.
+
+3. **Regression guard.** Run the existing tests via the adapter's `test_command` to
    capture the current green baseline. If they are already red, surface that before
    proceeding.
 
-3. **Characterization-first for untested code.** Decide whether the touched code has
-   tests using the adapter's `no_tests_detection` (e.g. zero collected items). If it
-   does not, generate **characterization tests first** - using the adapter's
-   `characterization_test_template` - that pin the current behavior **before** the
-   change is applied, so any regression becomes detectable.
+4. **Characterization-first for untested code.** Decide whether the touched code has
+   tests using the adapter's `no_tests_detection` (e.g. zero collected items, or CTest
+   reporting `Total Tests: 0`). If it does not, generate **characterization tests
+   first** - using the adapter's `characterization_test_template` (the
+   `cpp_characterization_test.cpp.tmpl` GoogleTest template for C++) - that pin the
+   current behavior **before** the change is applied, so any regression becomes
+   detectable.
 
-4. **New tests.** Generate tests/verifications for the new behavior per the agreed
+5. **New tests.** Generate tests/verifications for the new behavior per the agreed
    change spec, following project conventions and the adapter's framework.
 
-5. **Run existing + new tests** and confirm old behavior still passes and new behavior
+6. **Run existing + new tests** and confirm old behavior still passes and new behavior
    is verified. **Report pass/fail compactly** (stay within the `test` token budget in
    `.apia/config.yml`).
 
-6. **STOP at the gate** for the user to review results before APPLY.
+7. **STOP at the gate** for the user to review results before APPLY.
 
 ## Scriptable harness (same commands, no model needed)
 
@@ -43,7 +52,13 @@ automation stay in lockstep. It issues only the adapter's local `test_command`
 
 - Baseline + regression (existing tests): `python .apia/scripts/verify.py <repo>`
 - New-behavior phase too: `python .apia/scripts/verify.py <repo> --new-tests tests/<new_test>.py`
+- Build-only compile check (C++, or any project with no tests): `--build-only`.
+- Preview the plan without changing anything: `--dry-run`.
 - Machine-readable summary for tooling: add `--json`.
+
+For C++ the harness runs a BUILD phase first, then CTest-driven baseline/regression/new,
+parsing the adapter's `result_format` (`ctest`/`gtest`) into the same pass/fail counts as
+the pytest path.
 
 Use it to capture the green baseline before a change and to prove no regression
 plus the new test afterward. See `docs/PROOF.md` for the end-to-end walkthrough
