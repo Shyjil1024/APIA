@@ -210,6 +210,96 @@ Any stage can bounce back to CLARIFY if new uncertainty appears.
 
 ---
 
+## 3a. Layer 1 - grounded eval-data generation
+
+The TEST stage must grade a change against **observable project behavior**, never against
+the model's own restatement of the request. Layer 1 is the off-model machinery
+(`.apia/scripts/evaldata.py`) that assembles that ground truth. It is **language-neutral**
+and **calls no model**: it only runs the adapter's local commands and compares bytes/text/
+structure.
+
+**Trustworthiness order** (`eval_data.trust_order` in `.apia/config.yml`), from MOST to
+LEAST trustworthy; the loop prefers a higher-trust signal when more than one is available:
+
+```
+characterization > golden > invariant > differential
+```
+
+1. **characterization** - `harvest_characterization` runs the adapter's
+   `characterization.capture_command`, freezes the deterministic stdout, and hashes it.
+   Most trustworthy: it is the real output of the real code.
+2. **golden** - `compare_artifact` + `mine_golden` implement a **first-class,
+   language-neutral golden-file comparison**: freshly produced artifacts are diffed against
+   a committed golden tree (`golden.golden_dir`). `compare` is `bytes` (the trust default,
+   exact match), `text` (newline-normalized), or `json` (parsed structure). The
+   produced (non-golden) artifacts live in a gitignored output path; only the sources and
+   the committed golden tree are tracked, and `golden.artifact_glob` is scoped to the
+   produced-output directory so mining never sweeps generated build output.
+3. **invariant** - `run_invariants` checks built-in structural properties that must always
+   hold: `row_count_matches_input`, `no_nans`, `roundtrip_identity` (unknown ids ignored).
+4. **differential** - `differential_artifacts` is the artifact old-vs-new delta; the
+   test-COUNTS differential remains in `verify.compare_to_baseline` (the saved
+   `.apia-baseline.json`). `assemble_eval_data` ties these into one eval-data bundle.
+
+Adapters declare the optional `golden` / `characterization` / `invariants` sections (see
+`.apia/adapters/README.md`); a stack without them simply falls back to the differential
+delta.
+
+## 3b. Layer 2 - iterative self-correction loop
+
+Layer 2 (`.apia/scripts/evalloop.py`) turns a single verify pass into a **bounded
+iterate-to-green loop** that still gates on the human. Like Layer 1 it **calls no model**;
+it assembles the structured failure a model will consume and decides green/stop/ask.
+
+- `run_iteration_cycle` runs one deterministic verifier pass.
+- `evaluate(repo, adapter, options, state=LoopState())` enforces the **HARD
+  `max_iterations` cap** from `.apia/config.yml` and returns one of: `green`,
+  `needs_fix`, `stop` (`reason: max_iterations_reached`, with a specific ask), or
+  `needs_confirmation` (the acceptance-criteria gate, see 3c).
+- `build_failure_report` emits a compact, JSON-serializable, model-consumable failure
+  report and **fails loud** - when the cap is reached without going green the loop surfaces
+  the last structured failure and STOPS rather than silently continuing or applying a
+  broken change.
+- The per-iteration `token_budget.iterate` is an **advisory** ceiling (a warning, not a
+  hard stop); the hard stop is `max_iterations`. Iteration exists to converge quickly on
+  grounded eval data and AVOID wasted tokens, not to grind indefinitely.
+- `verify.py` exposes the loop headlessly: `--iterate`, `--max-iterations N`,
+  `--emit-failure-report`. One `--iterate` call runs ONE deterministic cycle; the model
+  fix between cycles is a **LIVE Copilot action, never performed by the scripts**.
+
+**Single-agent / VS 2022.** The whole loop is expressible via the Tier-0 protocol run as a
+single agent (see `docs/PORTABILITY.md`), so it runs on Visual Studio 2022, which honors
+only Tier-0 + Tier-1 prompt files (`/apia-iterate`), not Tier-2 skills/agents.
+
+## 3c. Anti-circularity / acceptance-criteria safeguard
+
+A model that both **writes the code** and **invents the test** could "pass" by grading
+itself against its own guess of the requirement. The safeguard: when
+`eval_data.acceptance_criteria_gate` is true, acceptance criteria that describe **NEW**
+behavior the code does not yet exhibit must be **human-confirmed** before the loop is
+allowed to treat them as truth. `propose_acceptance_criteria` surfaces them;
+`acceptance_criteria_confirmed` is the gate the loop checks before trusting new-behavior
+criteria (an unresolved gate returns `needs_confirmation`). Criteria that merely pin
+EXISTING behavior (characterization/golden/invariant) need no confirmation because they are
+already grounded in the real code.
+
+**The model-fix step is live-session-only.** The deterministic scripts (`evaldata.py`,
+`evalloop.py`, `verify.py`, `ingest.py`) **never call a model**; they build eval data, run
+the verifier, emit a structured failure, enforce the cap/budget, and decide green/stop/ask.
+The code generation and fixes happen only on the user's live Copilot session.
+
+**No second/external LLM verifier - deliberately not built.** APIA does **not** ship a
+second, external, open-source, or hosted LLM to act as a verifier or reviewer. The verifier
+is **deterministic tooling** (tests, build, lint, diff, golden-file compare), because a
+second model would (a) reintroduce the circularity this safeguard removes - one model's
+guess cannot validate another's - (b) require a separate LLM backend, violating the hard
+"runs entirely on the user's Copilot session, never a separate LLM API" constraint, and (c)
+cost tokens/credits with no deterministic guarantee. An **optional, opt-in self-hosted
+second-opinion reviewer** is explicitly **DEFERRED to a future phase** (see section 7) and
+would remain opt-in and off by default.
+
+---
+
 ## 4. Component inventory (what ships in the package)
 
 ```
@@ -232,8 +322,12 @@ Any stage can bounce back to CLARIFY if new uncertainty appears.
       apia-tester.agent.md           # test/terminal tools
   .apia/
     knowledge/                       # cached, committed project knowledge base
-    config.yml                       # token budget, stack adapters, thresholds
-    scripts/                         # off-model preprocessing (indexing, test discovery)
+    config.yml                       # token budget, max_iterations cap, eval_data policy, thresholds
+    scripts/                         # off-model preprocessing + eval machinery (no model calls)
+      ingest.py                      #   static indexing / detection / doctor preflight
+      verify.py                      #   deterministic verifier + --iterate loop surface
+      evaldata.py                    #   Layer 1: grounded eval-data generation
+      evalloop.py                    #   Layer 2: iterate-to-green loop + acceptance gate
     adapters/                        # per-stack build/test maps (py + cpp complete; csharp/groovy stubs)
   docs/
     ARCHITECTURE.md                  # this document
@@ -309,6 +403,9 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
 - **DEFERRED** - Improvement-opportunity suggestions grounded in the knowledge base.
 - **DEFERRED** - auto-push / PR / MR / CI integration and VS Code marketplace extension packaging
   (APIA stays strictly local; the user pushes manually).
+- **DEFERRED** - an **optional, opt-in self-hosted second-opinion reviewer** (off by default).
+  Phase 1/2 ship **no** second/external/hosted LLM verifier (see section 3c): the verifier stays
+  deterministic tooling and the loop rides only the user's Copilot session.
 
 ### Phase 3 - Validation gates (high level)
 

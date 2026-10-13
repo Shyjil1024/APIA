@@ -15,6 +15,19 @@ token_budget:
   modify: 6000      # plan + proposed diff grounded in the knowledge base
   test: 6000        # regression + new/characterization test authoring and results
   apply: 2000       # final change summary and commit/PR preparation
+  iterate: 4000     # soft per-iteration ceiling for the Layer-2 self-correction
+                    # loop: assembled structured failure + the smallest grounding
+                    # needed for the next fix attempt. Advisory, not a hard stop;
+                    # the hard stop is max_iterations below.
+
+# max_iterations: HARD cap on the Layer-2 self-correction loop (verifier runs ->
+# model proposes a fix -> re-verify). Iteration exists to AVOID wasted tokens by
+# converging quickly on grounded eval data, NOT to grind indefinitely: when the
+# cap is reached without going green the loop FAILS LOUD (surfaces the last
+# structured failure and stops) rather than silently continuing. The loop never
+# bypasses the human gate: a change still gates at APPLY regardless of how few
+# iterations it took.
+max_iterations: 3
 
 # confidence_threshold: the anti-hallucination clarify gate. If the agent's
 # confidence in its understanding of the request falls below this value (0.0-1.0),
@@ -43,6 +56,30 @@ stacks:
 # this directory is committed so knowledge is shared across the team and survives
 # sessions. Path is relative to the .apia/ directory.
 knowledge_dir: knowledge/
+
+# eval_data: Layer-1 grounded eval-data policy. The self-correction loop may only
+# trust a signal that is grounded in observable project behavior, never in the
+# agent's own restatement of the request. `trust_order` lists the Layer-1 signal
+# kinds from MOST to LEAST trustworthy; the loop prefers a higher-trust signal
+# when more than one is available:
+#   characterization > golden > invariant > differential
+#   - characterization: a test that pins the CURRENT observed behavior of the
+#     code (most trustworthy: it is the real output of the real code).
+#   - golden: a committed golden tree compared against freshly produced artifacts.
+#   - invariant: a built-in structural property that must always hold
+#     (e.g. row_count_matches_input, no_nans, roundtrip_identity).
+#   - differential: the delta against the saved baseline (regressions vs. new).
+# acceptance_criteria_gate: the anti-circularity safeguard. When true, acceptance
+# criteria that describe NEW behavior (not yet exhibited by the code) must be
+# human-confirmed before the loop is allowed to treat them as truth; otherwise the
+# agent could "pass" by grading itself against its own guess of the requirement.
+eval_data:
+  trust_order:
+    - characterization
+    - golden
+    - invariant
+    - differential
+  acceptance_criteria_gate: true
 
 # cpp: OPTIONAL per-project C++ overrides (a FALLBACK, never required). APIA
 # detects the build system, test framework, and config first (see

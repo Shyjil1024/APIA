@@ -100,7 +100,7 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | File / path | Purpose | Action |
 | --- | --- | --- |
 | `.github/copilot-instructions.md` | Tier-0 universal, always-on core protocol. Honored by **all** Copilot hosts, including JetBrains. This is the heart of the loop. | READ |
-| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply` (invoked as `/apia-ingest`, `/apia-feature`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
+| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply`, `apia-iterate` (invoked as `/apia-ingest`, `/apia-feature`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
 | `.github/skills/*/SKILL.md` | Tier-2 Agent Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`. Two run in `context: fork` for token isolation. VS Code Agent Host only. | READ |
 | `.github/agents/*.agent.md` | Tier-2 custom agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test). Their `handoffs` implement the approval gates. VS Code Agent Host only. | READ |
 
@@ -113,7 +113,9 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | `.apia/adapters/cpp.yml` | Per-stack command map for C++. **Complete** and supported today (CMake + MSBuild; GoogleTest/Catch2/CTest/VSTest; build-only phase; optional per-project override). The verify harness accepts it. | LEAVE (unless customizing) |
 | `.apia/adapters/csharp.yml`, `.apia/adapters/groovy.yml` | Per-stack command maps for C# and Groovy. **Stubs** (`test_command: null`); the verify harness intentionally refuses to run against a stub. Fill these in to support those stacks. | EDIT (to enable the stack) |
 | `.apia/scripts/ingest.py` | Off-model ingestion engine: static tree walk, manifest parse, test discovery, hashing. **No LLM/network calls.** Writes the knowledge base. | LEAVE |
-| `.apia/scripts/verify.py` | Off-model test/verify harness: existing-tests regression guard (with a real before/after baseline delta via `--baseline-only`) plus new tests. Refuses stub adapters. | LEAVE |
+| `.apia/scripts/verify.py` | Off-model test/verify harness: existing-tests regression guard (with a real before/after baseline delta via `--baseline-only`) plus new tests. Also the headless Layer-2 loop surface (`--iterate`, `--max-iterations N`, `--emit-failure-report`). Refuses stub adapters. **No LLM/network calls.** | LEAVE |
+| `.apia/scripts/evaldata.py` | Off-model **Layer-1** grounded eval-data generation: characterization capture, golden-file compare, built-in invariants, differential. **No model calls.** | LEAVE |
+| `.apia/scripts/evalloop.py` | Off-model **Layer-2** iterate-to-green loop: one deterministic cycle, the hard `max_iterations` cap, token-budget advisory, the acceptance-criteria gate, and a model-consumable structured failure report. **No model calls.** | LEAVE |
 | `.apia/knowledge/` | The cached, **committed** project knowledge base. Intentionally committed (not git-ignored) so it is shared across the team and survives sessions. | LEAVE (generated) |
 
 ### Reference docs and samples
@@ -214,6 +216,85 @@ run against a stub adapter.
 
 ---
 
+## The iterative self-correction loop (Layer 1 + Layer 2)
+
+Beyond a single verify pass, APIA can **iterate to green**: assemble repo-derived
+eval data, generate a change, run the deterministic verifier, feed the exact
+structured failure back and fix, re-run, and repeat until green **or** the hard
+`max_iterations` cap in `.apia/config.yml` is reached - then it **stops and asks a
+specific question**. It **never silently applies a broken change and never loops
+forever**, and APPLY still gates on you.
+
+Two hard rules make this trustworthy:
+
+- **The verifier is deterministic tooling** (tests/build/diff/golden), **never a
+  second model.** The off-model scripts (`evaldata.py`, `evalloop.py`, `verify.py`)
+  **call no model**; the code-fix step between iterations happens **only on your live
+  Copilot session**.
+- APIA ships **no** second/external/hosted LLM verifier. An optional opt-in
+  self-hosted second-opinion reviewer is a deferred future phase, off by default.
+
+### Layer 1 - repo-derived ground truth
+
+Eval data comes from observable project behavior, in trust order
+**characterization > golden > invariant > differential**:
+
+- **characterization** - freeze the current code's deterministic stdout as the baseline;
+- **golden** - diff freshly produced artifacts against a committed golden tree;
+- **invariant** - built-in structural checks (`row_count_matches_input`, `no_nans`,
+  `roundtrip_identity`);
+- **differential** - the delta vs. the saved `.apia-baseline.json`.
+
+### Acceptance-criteria confirmation gate (anti-circularity)
+
+For acceptance criteria describing **NEW** behavior the code does not yet exhibit, APIA
+asks for **one human confirmation** before trusting them
+(`eval_data.acceptance_criteria_gate: true` in `.apia/config.yml`). This stops the same
+model from both writing the code and inventing the test it grades itself against.
+Criteria that merely pin existing behavior need no confirmation.
+
+### Golden-file setup (Python and C++)
+
+The golden flow treats the artifacts your project produces as the correctness truth:
+
+1. Point the adapter's `golden.artifact_glob` at your **produced-output directory**
+   (e.g. `out/**/*.json`), **not** the whole tree, so mining never sweeps generated
+   build output. Set `golden.golden_dir` to a committed golden tree and `golden.compare`
+   to `bytes` (default, exact), `text` (newline-normalized), or `json` (parsed structure).
+2. Commit the known-good copies under `golden_dir`. Keep the produced (non-golden)
+   artifacts in a **gitignored** path (e.g. `samples/**/out/`); only the sources and the
+   committed golden tree are tracked.
+3. The samples show both stacks: Python mines
+   `samples/pyapp/tests/golden/{report.json,table.csv}` and C++ mines
+   `samples/cppapp/tests/golden/report.json`.
+
+### Running one iterate cycle (headless)
+
+Each `--iterate` call runs **one** deterministic cycle and prints the decision
+(`green` / `needs_fix` / `needs_confirmation` / `stop`). Between `needs_fix` cycles you
+(the live Copilot session) apply the fix, then re-run:
+
+```sh
+# Python
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/python.yml \
+    --iterate --max-iterations 3 --emit-failure-report --json
+
+# C++ (CMake + GoogleTest + CTest)
+python3 .apia/scripts/verify.py <repo> --adapter .apia/adapters/cpp.yml \
+    --iterate --max-iterations 3 --emit-failure-report --json
+```
+
+`--emit-failure-report` prints the compact, model-consumable structured failure to feed
+back for the next fix. `--max-iterations N` overrides the config cap for a run (the loop
+is **always** bounded by it). The command exits non-zero on any non-green decision so a
+preflight can gate on it.
+
+**On VS 2022 (single agent):** run `/apia-iterate` and follow the Tier-0 protocol - the
+loop is fully expressible via Tier-0 + the Tier-1 prompt files, with no dependency on
+Tier-2 skills or custom agents.
+
+---
+
 ## C++ quickstart
 
 C++ is **supported today** via the complete `cpp.yml` adapter (CMake + MSBuild;
@@ -295,7 +376,9 @@ The five stages each pause at a **human-approval gate**:
 3. **modify** — approve the proposed diff.
 4. **test** — review the regression results and the new test results.
    For legacy code with no tests, APIA writes **characterization tests first**
-   to pin current behavior before changing anything.
+   to pin current behavior before changing anything. A change can **iterate to
+   green** against Layer-1 eval data under the hard `max_iterations` cap
+   (`/apia-iterate`); the verifier is deterministic tooling, never a second model.
 5. **apply** — confirm the commit.
 
 ---

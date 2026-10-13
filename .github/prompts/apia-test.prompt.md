@@ -27,4 +27,25 @@ Run the APIA **TEST** stage.
    pass/fail counts.
 7. **STOP at the gate** for the user to review results.
 
+## Layer-1 eval data (repo-derived ground truth)
+
+Ground the verification in observable project behavior, never in the model's own
+restatement of the request. The adapter may declare three Layer-1 sources, used in
+trust order **characterization > golden > invariant > differential**:
+
+- **characterization** (`characterization.capture_command`) - pins current behavior;
+- **golden** (`golden.artifact_glob` / `golden_dir` / `compare`) - diffs freshly
+  produced artifacts against a committed golden tree (`bytes` is the default compare);
+- **invariant** (`invariants.checks`) - built-in structural properties
+  (`row_count_matches_input`, `no_nans`, `roundtrip_identity`);
+- **differential** - the delta against the saved baseline (regressions vs. new).
+
+## Acceptance-criteria confirmation gate (anti-circularity)
+
+For acceptance criteria describing **NEW** behavior the code does not yet exhibit, get
+**ONE human confirmation** before trusting them (`eval_data.acceptance_criteria_gate`
+in `.apia/config.yml`). The same model must not both write the code and invent the test
+it grades itself against. To iterate to green under the hard `max_iterations` cap, hand
+off to `/apia-iterate`.
+
 Do not call any external LLM. Use the adapter commands for the stack.

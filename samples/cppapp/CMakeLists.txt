@@ -13,6 +13,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(mathops src/mathops.cpp)
 target_include_directories(mathops PUBLIC include)
 
+# Deterministic Layer-1 artifact producer (APIA FEAT-004). Runs the real
+# mathops arithmetic and emits a stable JSON report the self-correction loop
+# grades against a committed golden (tests/golden/report.json). Built as part of
+# the normal `cmake --build build`, so the e2e proof can run the real binary.
+add_executable(report_main src/report_main.cpp)
+target_link_libraries(report_main PRIVATE mathops)
+
 # --- Tests -----------------------------------------------------------------
 include(FetchContent)
 FetchContent_Declare(

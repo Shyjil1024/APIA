@@ -19,8 +19,10 @@ verify.py and ingest.py are pure off-model modules (no LLM/network). The e2e
 tests drive only the adapter's LOCAL cmake/ctest commands via subprocess.
 """
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -30,6 +32,8 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 import verify  # noqa: E402
+import evaldata  # noqa: E402
+import evalloop  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPTS_DIR))
 CPPAPP = os.path.join(REPO_ROOT, "samples", "cppapp")
@@ -443,15 +447,18 @@ def test_plan_no_build_for_python(tmp_path):
 
 
 def _copy_cpp_sources(src, dst):
-    """Copy a C++ sample's SOURCES (not the build dir) so CMake configures fresh."""
+    """Copy a C++ sample's SOURCES (not the build dir / caches / produced out/)
+    so CMake configures fresh and no stale cache leaks into the copy."""
+    skip = ("build", "__pycache__", ".pytest_cache", "out",
+            ".apia-baseline.json")
     os.makedirs(dst)
     for name in os.listdir(src):
-        if name == "build":
+        if name in skip:
             continue
         s = os.path.join(src, name)
         d = os.path.join(dst, name)
         if os.path.isdir(s):
-            shutil.copytree(s, d)
+            shutil.copytree(s, d, ignore=shutil.ignore_patterns(*skip))
         else:
             shutil.copy2(s, d)
     return dst
@@ -583,3 +590,259 @@ def test_e2e_legacy_cppapp_characterization_green(tmp_path):
     assert build["passed"] is True
     assert baseline["passed"] and baseline["counts"]["passed"] >= 1
     assert summary["ok"] is True
+
+
+# ===========================================================================
+# FEAT-004 BOTH-STACKS PROOF (C++ side): golden + invariant + characterization
+# + differential + full iterate-to-green, executed for REAL via CMake +
+# GoogleTest + CTest against the samples/cppapp producer and its COMMITTED
+# golden artifact. All guarded by shutil.which(cmake/ctest).
+#
+# samples/cppapp ships:
+#   * src/report_main.cpp         -- a deterministic Layer-1 artifact producer
+#                                    (built as the report_main target).
+#   * tests/golden/report.json    -- the COMMITTED golden JSON (the oracle).
+# Produced (non-golden) artifacts are written to a gitignored out/ dir, so only
+# the sources + committed golden are tracked.
+# ===========================================================================
+
+_CPP_GOLDEN_JSON = os.path.join(CPPAPP, "tests", "golden", "report.json")
+
+
+def _build_cpp_report_binary(repo):
+    """Configure + build samples/cppapp and return the report_main binary path.
+
+    Uses the adapter's own LOCAL cmake build command (the only subprocess), the
+    same path verify.py drives. Returns the path to the built producer binary."""
+    adapter = verify.load_adapter(CPP_ADAPTER)
+    build = verify.run_build_phase(verify.resolve_build_command(adapter), repo)
+    assert build["passed"] is True, build
+    binary = os.path.join(repo, "build", "report_main")
+    assert os.path.isfile(binary), "report_main binary must be built"
+    return binary
+
+
+def _produce_cpp_artifact(repo, binary, mangle=False):
+    """Run the built producer to emit out/report.json; return its path.
+
+    When ``mangle`` is True the produced artifact is deliberately corrupted so it
+    diverges from the committed golden (the RED state for the iterate cycle)."""
+    out_dir = os.path.join(repo, "out")
+    os.makedirs(out_dir, exist_ok=True)
+    produced = os.path.join(out_dir, "report.json")
+    run = subprocess.run([binary, produced], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, universal_newlines=True)
+    assert run.returncode == 0, run.stderr
+    if mangle:
+        with open(produced, "r", encoding="utf-8") as fh:
+            data = fh.read()
+        with open(produced, "w", encoding="utf-8") as fh:
+            fh.write(data.replace('"sum":5', '"sum":999'))
+    return produced
+
+
+@_requires_toolchain
+def test_e2e_cpp_committed_golden_matches_fresh_production(tmp_path):
+    """The COMMITTED golden under samples/cppapp/tests/golden/ byte-matches the
+    freshly produced artifact from the REAL built binary, proving the committed-
+    golden path resolves produced-vs-golden in the real sample tree."""
+    assert os.path.isfile(_CPP_GOLDEN_JSON), "committed C++ golden must exist"
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+    produced = _produce_cpp_artifact(repo, binary)
+
+    # bytes mode (language-neutral trust default): byte-identical to the golden.
+    bytes_cmp = evaldata.compare_artifact(produced, _CPP_GOLDEN_JSON, "bytes")
+    assert bytes_cmp["match"] is True, bytes_cmp
+    assert bytes_cmp["produced_hash"] == bytes_cmp["golden_hash"]
+    # json mode: structure matches too.
+    json_cmp = evaldata.compare_artifact(produced, _CPP_GOLDEN_JSON, "json")
+    assert json_cmp["match"] is True, json_cmp
+
+
+@_requires_toolchain
+def test_e2e_cpp_shipped_adapter_golden_block_matches_all_artifacts(tmp_path):
+    """The SHIPPED cpp.yml golden block (loaded via verify.load_adapter, NOT an
+    inline fixture) mines the committed golden green through mine_golden.
+
+    Mirrors the Python shipped-adapter golden test so BOTH shipped adapters'
+    golden paths are covered. The cpp.yml block globs out/**/*.json, *.csv and
+    *.png under compare: bytes; the sample producer emits only report.json, so
+    exactly that artifact resolves and must match the committed byte-exact
+    golden. Guarded by cmake/ctest since it needs the built binary to produce the
+    artifact."""
+    adapter = verify.load_adapter(CPP_ADAPTER)  # the SHIPPED cpp.yml, not inline
+    golden = adapter["golden"]
+    assert golden["golden_dir"] == "tests/golden"
+    assert golden["compare"] == "bytes"
+
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+    _produce_cpp_artifact(repo, binary)
+
+    results = evaldata.mine_golden(repo, adapter)
+    # The producer emits only report.json; the *.csv / *.png globs match nothing.
+    assert [r["artifact"] for r in results] == [os.path.join("out", "report.json")], results
+    assert all(r["match"] is True for r in results), results
+    assert results[0]["mode"] == "bytes"
+
+
+@_requires_toolchain
+def test_e2e_cpp_mine_golden_resolves_committed_tree(tmp_path):
+    """mine_golden reports match=True resolving the C++ producer output against
+    the committed golden tree via a sample-local eval adapter."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+    _produce_cpp_artifact(repo, binary)
+    adapter = {
+        "name": "cpp",
+        "golden": {
+            "artifact_glob": ["out/report.json"],
+            "golden_dir": "tests/golden",
+            "compare": "bytes",
+        },
+    }
+    results = evaldata.mine_golden(repo, adapter)
+    assert len(results) == 1 and results[0]["match"] is True, results
+    assert results[0]["artifact"] == os.path.join("out", "report.json")
+
+
+@_requires_toolchain
+def test_e2e_cpp_invariant_row_count_matches_input(tmp_path):
+    """run_invariants proves a property on the REAL C++-produced artifact: the
+    row count equals the producer's declared input count, no NaNs, roundtrips."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+    produced = _produce_cpp_artifact(repo, binary)
+    with open(produced, "r", encoding="utf-8") as fh:
+        rows = json.loads(fh.read())
+    adapter = {
+        "name": "cpp",
+        "invariants": {"checks": ["row_count_matches_input", "no_nans",
+                                  "roundtrip_identity"]},
+    }
+    results = evaldata.run_invariants(
+        repo, adapter,
+        {"produced_path": produced, "input_row_count": len(rows)},
+    )
+    held = {c["check_id"]: c["held"] for c in results}
+    assert held == {"row_count_matches_input": True, "no_nans": True,
+                    "roundtrip_identity": True}, results
+
+
+@_requires_toolchain
+def test_e2e_cpp_characterization_freezes_and_stays_stable(tmp_path):
+    """Characterization harvest records the C++ producer binary's current stdout
+    and freezes it with a stable hash; re-running the same binary yields the
+    byte-identical frozen output (a RECORDING of real behavior)."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+    adapter = {
+        "name": "cpp",
+        # The C++ characterization "capture" is running the real producer binary.
+        "characterization": {"capture_command": binary},
+    }
+    first = evaldata.harvest_characterization(repo, adapter)
+    assert first is not None and first["returncode"] == 0
+    assert first["output_hash"]
+    second = evaldata.harvest_characterization(repo, adapter)
+    assert second["output_hash"] == first["output_hash"], (
+        "the characterized C++ behavior must be stable across runs")
+
+
+@_requires_toolchain
+def test_e2e_cpp_differential_only_intended_artifact_changes(tmp_path):
+    """Differential OLD-vs-NEW on the C++ producer output: produce twice from the
+    same inputs, change ONLY one artifact, and show the unchanged one stays
+    byte-identical while only the intended one is flagged."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+
+    old_dir = os.path.join(repo, "old")
+    new_dir = os.path.join(repo, "new")
+    os.makedirs(old_dir)
+    os.makedirs(new_dir)
+    # Produce the SAME report into both dirs (plus a second, unchanged copy).
+    for d in (old_dir, new_dir):
+        run = subprocess.run([binary, os.path.join(d, "report.json")],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+        assert run.returncode == 0, run.stderr
+        # A second artifact that will stay identical in both dirs.
+        shutil.copy2(os.path.join(d, "report.json"),
+                    os.path.join(d, "report_copy.json"))
+
+    # Deterministic scripted change to ONLY report.json in NEW.
+    new_report = os.path.join(new_dir, "report.json")
+    with open(new_report, "r", encoding="utf-8") as fh:
+        data = fh.read()
+    with open(new_report, "w", encoding="utf-8") as fh:
+        fh.write(data.replace('"sum":5', '"sum":999'))
+
+    diff = evaldata.differential_artifacts(old_dir, new_dir, ["*.json"], "bytes")
+    assert diff["unchanged"] == ["report_copy.json"], diff
+    assert [c["artifact"] for c in diff["changed"]] == ["report.json"], diff
+
+
+@_requires_toolchain
+def test_e2e_cpp_full_iterate_to_green_with_committed_golden(tmp_path):
+    """FULL C++ iterate-to-green driven by the COMMITTED golden: start RED (the
+    producer emits a corrupted artifact so the golden comparison fails), get the
+    structured failure report, apply a DETERMINISTIC scripted fix (re-run the
+    real producer), re-run GREEN, and prove the cap stops a persistently-red
+    variant. The 'fix' stands in for the LIVE model fix; evalloop makes no model
+    call. The real cmake build + producer binary run through the adapter's local
+    commands; the committed golden is the oracle that flips red/green."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    binary = _build_cpp_report_binary(repo)
+
+    # Isolate the Layer-1 golden signal: run the REAL cmake build (green) with
+    # build_only so no test phase can confound the demo; the COMMITTED-golden
+    # comparison is then the ONLY thing that flips red/green across the cycle.
+    # verify.verify loads the real CPP_ADAPTER from adapter_path; the eval
+    # adapter dict passed to evaluate drives the Layer-1 golden mining.
+    adapter = {
+        "name": "cpp",
+        "golden": {
+            "artifact_glob": ["out/report.json"],
+            "golden_dir": "tests/golden",
+            "compare": "bytes",
+        },
+    }
+    eval_options = {"golden": True, "characterization": False,
+                    "invariants": False}
+    opts = {"adapter_path": CPP_ADAPTER, "build_only": True,
+            "eval_options": eval_options,
+            "baseline_file": str(tmp_path / "bl.json")}
+
+    # --- START RED: produce a corrupted artifact; golden comparison fails. ---
+    _produce_cpp_artifact(repo, binary, mangle=True)
+    state = evalloop.LoopState()
+    red = evalloop.evaluate(repo, adapter, dict(opts, max_iterations=3), state)
+    assert red["status"] == "needs_fix", red
+    report = red["failure_report"]
+    assert report["golden_failures"], report
+    assert report["golden_failures"][0]["artifact"] == os.path.join(
+        "out", "report.json")
+    assert json.loads(json.dumps(report, default=str))
+    assert state.iteration == 1
+
+    # --- SCRIPTED FIX: re-run the real producer so the artifact matches. ---
+    _produce_cpp_artifact(repo, binary, mangle=False)
+    green = evalloop.evaluate(repo, adapter, dict(opts, max_iterations=3), state)
+    assert green["status"] == "green", green
+    assert state.iteration == 2
+
+    # --- Prove the cap stops a persistently-red golden mismatch. ---
+    _produce_cpp_artifact(repo, binary, mangle=True)
+    cap_state = evalloop.LoopState()
+    decisions = []
+    for _ in range(10):
+        d = evalloop.evaluate(repo, adapter, dict(opts, max_iterations=2),
+                              cap_state)
+        decisions.append(d)
+        if d["status"] == "stop":
+            break
+    assert decisions[-1]["status"] == "stop", decisions[-1]
+    assert decisions[-1]["reason"] == "max_iterations_reached"
+    assert cap_state.iteration == 2

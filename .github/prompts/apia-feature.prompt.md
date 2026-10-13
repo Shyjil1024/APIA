@@ -19,7 +19,11 @@ Run the APIA **feature loop** (CLARIFY -> MODIFY).
    (confidence 0.6). Which build system should I target - CMake or MSBuild?" Fetch any
    external data via MCP/tool-use, never invent it.
 3. **STOP at the CLARIFY gate** until the user answers and approves a **change spec**
-   (what, where, acceptance criteria, out-of-scope). Confirmed facts persist to
+   (what, where, acceptance criteria, out-of-scope). For acceptance criteria that
+   describe **NEW** behavior the code does not yet exhibit, get **ONE human
+   confirmation** here (the anti-circularity `eval_data.acceptance_criteria_gate` in
+   `.apia/config.yml`): the same model must not both write the code and silently invent
+   the test it grades itself against. Confirmed facts and criteria persist to
    `.apia/knowledge/` (project-facts) so they are **not re-asked** next time.
 4. Produce a plan + **proposed diff** grounded in `.apia/knowledge/` and the specific
    files involved. Write nothing to disk yet. To preview what the verification would
@@ -27,5 +31,10 @@ Run the APIA **feature loop** (CLARIFY -> MODIFY).
    `verify.py <repo> --dry-run` prints the planned build/test commands and reasoning.
 5. **STOP at the MODIFY gate** for the user to approve the diff (or request changes,
    which loops back to CLARIFY).
+
+Once approved, the change is verified against **Layer-1 repo-derived eval data**
+(characterization > golden > invariant > differential) and may iterate to green under
+the hard `max_iterations` cap via `/apia-iterate` - the verifier is deterministic
+tooling, never a second model.
 
 Hand off to `apia-implementer` only after the diff is approved.

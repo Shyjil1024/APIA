@@ -19,16 +19,26 @@ human-approval gate.
    `.apia/config.yml`, keep asking - **never guess**.
 5. **Fetch external data via MCP/tool-use** (API schemas, library docs), never invent it.
 6. Output an agreed **change spec**: what, where, acceptance criteria, out-of-scope.
-7. **STOP** until the user answers / approves the change spec.
+7. **Acceptance-criteria confirmation gate (anti-circularity).** For acceptance criteria
+   that describe **NEW** behavior the code does not yet exhibit, get **ONE human
+   confirmation** before the loop treats them as truth
+   (`eval_data.acceptance_criteria_gate` in `.apia/config.yml`). The same model must not
+   both write the code and silently invent the test it grades itself against.
+8. **STOP** until the user answers / approves the change spec and any new-behavior criteria.
 
 ## MODIFY (propose, do not write)
 
 1. Produce a **plan + proposed diff** grounded in `.apia/knowledge/` and the specific
    files involved, following the project's detected conventions.
 2. Write **nothing** to disk yet; present the diff for review.
-3. **STOP** for the user to approve the diff (or request changes -> loop back to CLARIFY).
+3. Note which **Layer-1 eval-data** signal will verify the change
+   (characterization > golden > invariant > differential) so verification is grounded
+   in observable behavior, not the model's restatement of the request.
+4. **STOP** for the user to approve the diff (or request changes -> loop back to CLARIFY).
 
 ## Next
 
 Once the diff is approved, hand off to the TEST stage (`apia-test-authoring`) and then
-APPLY. Never call an external/separate LLM API.
+APPLY. The change may **iterate to green** under the hard `max_iterations` cap via the
+Layer-2 loop (`/apia-iterate`): the verifier is **deterministic tooling, not a second
+model**, and the fix step is this live session only. Never call an external/separate LLM API.

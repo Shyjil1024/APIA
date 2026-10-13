@@ -22,3 +22,5 @@ TEST(Divide, DividesEvenly) { EXPECT_EQ(mathops::divide(12, 3), 4); }
 TEST(Divide, ThrowsOnDivideByZero) {
     EXPECT_THROW(mathops::divide(1, 0), std::invalid_argument);
 }
+
+TEST(Multiply, MultipliesTwoNumbers) { EXPECT_EQ(mathops::multiply(4, 5), 20); }

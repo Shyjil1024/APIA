@@ -27,8 +27,9 @@ guarantee.
   including JetBrains.
 - **Tier 1 - Portable prompt entrypoints (VS Code, Visual Studio, JetBrains):**
   `*.prompt.md` slash-commands give explicit per-stage entrypoints where Agent
-  Skills are not yet honored. (Deprecated in the VS Code Agent Host, which prefers
-  skills.)
+  Skills are not yet honored (`/apia-ingest`, `/apia-feature`, `/apia-clarify`,
+  `/apia-test`, `/apia-apply`, and `/apia-iterate` for the Layer-2 iterate-to-green
+  loop). (Deprecated in the VS Code Agent Host, which prefers skills.)
 - **Tier 2 - Rich skill package (VS Code Agent Host):** `SKILL.md` skills with
   `context: fork` for heavy, token-isolated stages, plus custom agents
   (`*.agent.md`) whose `handoffs` implement the approval gates as UI buttons.
@@ -45,8 +46,11 @@ guarantee.
   must work via the Tier-0 protocol run as a single agent** following the written
   prompt files - no forked-context skills, no handoff buttons. The Tier-0 instructions
   therefore carry the full protocol (loop, gates, detect-first/clarify discipline, C++
-  support, the doctor/project-facts/dry-run/build-only helpers, and the local-only
-  rule) so the C++ loop is self-sufficient on VS 2022.
+  support, the doctor/project-facts/dry-run/build-only helpers, the **iterative
+  self-correction loop + acceptance-criteria confirmation gate**, and the local-only
+  rule) so the C++ loop is self-sufficient on VS 2022. The Layer-2 iterate-to-green loop
+  is expressible via Tier-0 plus the Tier-1 `/apia-iterate` prompt alone, with no
+  dependency on Tier-2.
 - **VS Code Agent Host** is the Phase-1 primary host (richest surface) and
   **deprecates prompt files** in favor of Agent Skills.
 - **Agent Skills `name` must equal the parent directory name** and contain only
