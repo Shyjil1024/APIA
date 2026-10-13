@@ -100,9 +100,9 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | File / path | Purpose | Action |
 | --- | --- | --- |
 | `.github/copilot-instructions.md` | Tier-0 universal, always-on core protocol. Honored by **all** Copilot hosts, including JetBrains. This is the heart of the loop. | READ |
-| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply`, `apia-iterate` (invoked as `/apia-ingest`, `/apia-feature`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
-| `.github/skills/*/SKILL.md` | Tier-2 Agent Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`. Two run in `context: fork` for token isolation. VS Code Agent Host only. | READ |
-| `.github/agents/*.agent.md` | Tier-2 custom agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test). Their `handoffs` implement the approval gates. VS Code Agent Host only. | READ |
+| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply`, `apia-iterate`, `apia-review` (invoked as `/apia-ingest`, `/apia-feature`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
+| `.github/skills/*/SKILL.md` | Tier-2 Agent Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`, and the four reviewer scan skills (`apia-security-scan`, `apia-quality-scan`, `apia-perf-scan`, `apia-limitations`). The heavy stages run in `context: fork` for token isolation. VS Code Agent Host only. | READ |
+| `.github/agents/*.agent.md` | Tier-2 custom agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test), `apia-reviewer` (read-only). Their `handoffs` implement the approval gates. VS Code Agent Host only. | READ |
 
 ### Config, scripts, adapters, and knowledge (`.apia/`)
 
@@ -116,6 +116,7 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | `.apia/scripts/verify.py` | Off-model test/verify harness: existing-tests regression guard (with a real before/after baseline delta via `--baseline-only`) plus new tests. Also the headless Layer-2 loop surface (`--iterate`, `--max-iterations N`, `--emit-failure-report`). Refuses stub adapters. **No LLM/network calls.** | LEAVE |
 | `.apia/scripts/evaldata.py` | Off-model **Layer-1** grounded eval-data generation: characterization capture, golden-file compare, built-in invariants, differential. **No model calls.** | LEAVE |
 | `.apia/scripts/evalloop.py` | Off-model **Layer-2** iterate-to-green loop: one deterministic cycle, the hard `max_iterations` cap, token-budget advisory, the acceptance-criteria gate, and a model-consumable structured failure report. **No model calls.** | LEAVE |
+| `.apia/scripts/scan.py` | Off-model **Reviewer** scanner engine: runs the adapter's local scanners, normalizes their output into one canonical finding shape, applies the composable `apply_thresholds()` gate, and emits a prioritized JSON report. Auto-detects the stack and excludes generated/vendored dirs. **No LLM/network calls.** | LEAVE |
 | `.apia/knowledge/` | The cached, **committed** project knowledge base. Intentionally committed (not git-ignored) so it is shared across the team and survives sessions. | LEAVE (generated) |
 
 ### Reference docs and samples
@@ -363,6 +364,81 @@ Windows yourself:
   (the clarify gate) and the per-stage `token_budget` values.
 - Add or complete `.apia/adapters/*.yml` for non-Python stacks (fill in
   `test_command`, `build_command`, discovery globs, and so on).
+
+---
+
+## The Reviewer (security / quality / perf / limitations)
+
+APIA can continuously scan a repo for **security**, **quality**, **performance**, and
+**limitations** findings. The scanning is done by the **off-model** engine
+`.apia/scripts/scan.py`, which runs real **local** scanner tools, normalizes their
+output into one canonical finding shape, and applies a composable gate. Copilot only
+**summarizes and prioritizes** the grounded findings - it never invents one, and if a
+scanner is missing it says so. `scan.py` makes **zero LLM and zero network-to-model
+calls**.
+
+### Install the scanner tools
+
+The scanners are ordinary local tools; install the ones for your stack.
+
+- **Python:** `bandit`, `ruff` and/or `flake8`, `radon`, `pip-audit`:
+
+  ```sh
+  pip install bandit ruff flake8 radon pip-audit
+  ```
+
+- **C++:** `cppcheck` and `clang-tidy` (install via your package manager, e.g.
+  `apt-get install cppcheck clang-tidy` or Homebrew). `clang-tidy` wants a compile
+  database (`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` in your CMake configure).
+
+A **missing** tool is only a warning: `scan.py` degrades it to a `tool_unavailable`
+marker and still returns a valid report. Check presence any time with `--doctor`:
+
+```sh
+python3 .apia/scripts/scan.py --doctor
+```
+
+### Run the scan
+
+```sh
+python3 .apia/scripts/scan.py <repo>
+```
+
+With no `--adapter`, `scan.py` **auto-detects the stack** (reusing the ingester's
+detection) and resolves the matching adapter from `.apia/config.yml`, and it **excludes
+generated/vendored directories** (`build/`, `_deps/`, `.venv`, `node_modules`, ...) so a
+CMake `build/` tree never becomes a finding. Useful flags:
+
+```sh
+# force a specific adapter (always wins over auto-detection)
+python3 .apia/scripts/scan.py <repo> --adapter .apia/adapters/cpp.yml
+
+# limit to one finding category
+python3 .apia/scripts/scan.py <repo> --category security   # security|quality|perf|all
+
+# emit the machine-readable JSON report (the composable interface)
+python3 .apia/scripts/scan.py <repo> --json
+
+# override the gate for this run (fail on anything at this severity or worse)
+python3 .apia/scripts/scan.py <repo> --fail-on-severity high
+```
+
+The command's exit code reflects the **gate** decision (`0` = gate passed), so a
+preflight can gate on it. The gate thresholds live in the `review` block of
+`.apia/config.yml`; both a standalone review and a future greenfield-generation gate
+read the **same** block.
+
+### Through Copilot
+
+Run the Tier-1 slash-command `/apia-review` (or invoke the Tier-2 scan skills in the VS
+Code Agent Host). The read-only `apia-reviewer` agent runs `scan.py` for both **Python**
+and **C++**, reads the structured report, and presents a prioritized summary at a
+human-approval gate.
+
+**On Visual Studio 2022:** VS 2022 honors **only Tier-0 + Tier-1 prompt files**, not
+Tier-2 skills/agents. The reviewer therefore runs as a **single Tier-0/Tier-1 agent**
+driving `scan.py` via `/apia-review`; the Tier-2 scan skills and the `apia-reviewer`
+custom agent are not honored there.
 
 ---
 

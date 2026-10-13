@@ -100,6 +100,8 @@ the off-model scanner engine (`.apia/scripts/scan.py`) runs for the Reviewer. It
 maps a **finding category** to one or more declarative scanner definitions. An
 adapter without it (e.g. a stub) is **refused** by `scan.py`
 (`StubAdapterError`) rather than reporting a false clean bill of health.
+`python.yml` and `cpp.yml` declare `scanners:`; `csharp.yml` and `groovy.yml` remain
+**stubs with no `scanners:` section** until Phase 2 fills them in.
 
 ```yaml
 scanners:
@@ -134,6 +136,41 @@ severity kind routes each finding to security/quality/perf), so a single
 commands to the project's own source tree (e.g. the C++ adapter scans
 `src include`, not `.`) so mining never sweeps a generated `build/` tree, mirroring
 the `golden.artifact_glob` scoping discipline.
+
+### The findings-report INTERFACE (the stable contract other components consume)
+
+`scan.py`'s `scan(repo, adapter, options)` returns a JSON-serializable report that is
+the **stable contract** a standalone reviewer, a future greenfield-generation gate, and
+the future iterate-to-best eval-loop fusion all read:
+
+```
+{
+  "repo", "repo_path", "stack",       # scanned repo + resolved adapter name
+  "adapter_source",                   # how the adapter was chosen (explicit/auto-detected/default)
+  "category",                         # the scanned category (security|quality|perf|all)
+  "findings": [ {severity, category, file, line, rule, message, source_tool}, ... ],
+  "counts_by_severity": {critical, high, medium, low, info},
+  "counts_by_category": {security, quality, perf, ...},
+  "threshold": { ...effective thresholds (review.thresholds, CLI-overridable)... },
+  "gate": {                           # the composable decision
+    "passed": bool,
+    "fail_on_severity": <level or null>,
+    "failing_severities": [...],
+    "failing_counts": {category: {limit, actual}},
+    "reasons": [human-readable strings]
+  },
+  "tools": { ...scanner presence (doctor-style)... },
+  "scanners": [ ...per-scanner meta... ],
+  "unavailable_tools": [ ...missing tool names... ]
+}
+```
+
+The `gate` block is produced by the SINGLE shared function
+`apply_thresholds(findings, thresholds)`, so the decision is **composable without
+rework**: `thresholds` comes from the `review` block in `.apia/config.yml`
+(`fail_on_severity` plus optional per-category / `total` `max_findings`), and both a
+standalone review and a future generation gate call `apply_thresholds()` with the SAME
+signature.
 
 ## Layer-1 eval-data sections (used by `python.yml` and `cpp.yml`)
 

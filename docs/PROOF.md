@@ -374,6 +374,100 @@ These demonstrations are encoded as pytest so CI asserts them:
 
 ---
 
+## Reviewer proof (security / quality / perf scanning)
+
+The Reviewer is proven the same way as the loop: the off-model engine
+`.apia/scripts/scan.py` runs real **local** scanner tools, normalizes their output into
+one canonical finding shape, and applies the composable `apply_thresholds()` gate.
+`scan.py` makes **zero LLM and zero network-to-model calls** (a static guard test in
+`test_scan.py` enforces it, mirroring `test_ingest`'s guard); the only subprocess it
+spawns is a local adapter-declared scanner tool.
+
+### Executed in-sandbox vs. fixture-pinned (read this first)
+
+Mirroring the MSBuild executed-vs-fixture discipline above, this section is explicit
+about what was run for real. **In this sandbox ALL of the declared scanners were
+EXECUTED for real** against the committed samples - there is no fixture-only scanner
+path. The per-tool output **normalization** is *additionally* pinned by fixture-based
+unit tests in `.apia/scripts/tests/test_scan.py` for determinism (so a parser is proven
+even on a host where the tool is absent), but every tool below produced its findings
+from a real run here.
+
+- **EXECUTED for real against `samples/pyapp`:** `bandit`, `ruff`, `radon`, `pip-audit`,
+  and `flake8`.
+- **EXECUTED for real against `samples/cppapp/src/smelly.cpp`:** `cppcheck` (2.22.0) and
+  `clang-tidy` (LLVM), with the gitignored `build/_deps` GoogleTest tree correctly
+  **EXCLUDED** from the findings.
+- **FIXTURE-PINNED (determinism, in addition to the real runs):** each tool's
+  normalizer is unit-tested against captured fixture output so the canonical shape is
+  reproducible regardless of tool version/presence.
+
+### Python scanners (executed against `samples/pyapp`)
+
+```bash
+.venv/bin/python .apia/scripts/scan.py samples/pyapp --json
+```
+
+The engine runs the `python.yml` `scanners:` tools (rewriting each `python -m <mod>` to
+run under the `.venv` interpreter) and produces **real** findings, including:
+
+```
+scan => stack: python
+  [high    ] security B602  calc/insecure_demo.py  - subprocess call with shell=True
+  [low     ] security B105  calc/insecure_demo.py  - hardcoded password string
+  [low     ] security B404  calc/insecure_demo.py  - consider possible security implications of subprocess
+  [high    ] security PYSEC-2021-66 jinja2==2.10   - vulnerable dependency (also CVE-2020-28493, CVE-2019-10906, ...)
+  ...plus ruff/flake8 quality + radon complexity findings...
+  => GATE FAILED: security findings exceed the max of 0
+```
+
+`bandit` surfaces the real `B602` (subprocess `shell=True`) + `B105` + `B404` smells in
+the intentional `calc/insecure_demo.py` fixture; `pip-audit` audits the committed
+`requirements-vuln.txt` (an intentional fixture pin, **not installed**) and reports the
+real `jinja2==2.10` advisories (`PYSEC-2021-66` / `CVE-2020-28493`, `CVE-2019-10906`,
+and more). `pip-audit` resolving its advisory DB over the network is the **scanner
+tool's** behavior; `scan.py` itself makes no model/network call.
+
+### C++ scanners (executed against `samples/cppapp`)
+
+```bash
+.venv/bin/python .apia/scripts/scan.py samples/cppapp --json
+```
+
+`scan.py` auto-detects the `cpp` stack and runs the `cpp.yml` scanners. `cppcheck`
+2.22.0 and `clang-tidy` (LLVM) were **executed for real** against
+`samples/cppapp/src/smelly.cpp` and produced real findings:
+
+```
+scan => stack: cpp  (auto-detected -> cpp.yml)
+  [high    ] security uninitvar     src/smelly.cpp  - uninitialized variable
+  [high    ] security memleak       src/smelly.cpp  - memory leak
+  [medium  ] perf     passedByValue src/smelly.cpp  - parameter should be passed by const reference
+  ...clang-tidy quality findings...
+  => GATE FAILED
+```
+
+Crucially, the gitignored CMake **`build/_deps`** tree (which vendors GoogleTest's own
+sources) is **EXCLUDED** by `scan.py`'s generated/vendored-dir filter, so a `.`-style
+sweep does not bury the project's own smells under thousands of third-party parse
+artifacts - the report is grounded in `src/`.
+
+> Maps to the **Phase-2 Reviewer** (see `ARCHITECTURE.md` section 3d): the off-model
+> `scan.py` engine produces the grounded, prioritized findings; the model-facing step
+> (the read-only `apia-reviewer` agent + the four scan skills + `/apia-review`) only
+> summarizes and prioritizes them, never fabricating a finding.
+
+### CI-asserted
+
+These demonstrations are encoded as pytest so CI asserts them:
+`.apia/scripts/tests/test_scan.py` runs the real Python scanners against `samples/pyapp`
+and the real `cppcheck`/`clang-tidy` against `samples/cppapp` (asserting the specific
+findings above), the fixture-based per-tool normalization, the `apply_thresholds()` gate
+pass/fail reasons, graceful missing-tool degradation, stack auto-detection, the
+build/vendored-dir exclusion, and the no-LLM/no-network static guard.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:
@@ -396,3 +490,9 @@ without a Windows toolchain), `--dry-run` and `--build-only` behavior, and - gua
 CMake + GoogleTest + CTest loop on `samples/cppapp` (build + baseline + regression green
 with >= 3 passed, a before/after delta that catches a broken existing test) plus the
 `samples/legacy_cppapp` characterization path. These RUN and pass in this sandbox.
+
+`.apia/scripts/tests/test_scan.py` adds the Reviewer coverage: the executed real Python
+scanners against `samples/pyapp` and the real `cppcheck`/`clang-tidy` against
+`samples/cppapp`, the fixture-based per-tool normalizers, the `apply_thresholds()` gate,
+missing-tool degradation, stack auto-detection, the generated/vendored-dir exclusion,
+and the no-LLM/no-network static guard. These RUN and pass in this sandbox.

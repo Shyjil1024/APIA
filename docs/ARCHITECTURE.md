@@ -300,6 +300,108 @@ would remain opt-in and off by default.
 
 ---
 
+## 3d. The Reviewer (Phase 2) and its composable-gate interface
+
+The **Reviewer** adds continuous **security / quality / performance / limitations**
+scanning to APIA. Like the TEST layers it splits cleanly into an **off-model scanning
+engine** and a **model-facing summarize/prioritize step**, and it reuses the exact
+anti-circularity framing of section 3c: the scanners are **deterministic LOCAL tools,
+never a second model**.
+
+### Off-model engine: `.apia/scripts/scan.py`
+
+`scan.py` is the scanning counterpart to `verify.py`. Where `verify.py` normalizes
+per-stack TEST output via a `result_format -> parser` dispatch, `scan.py` normalizes
+per-stack SCANNER output via a `source_tool -> normalizer` dispatch. It:
+
+- **Runs real LOCAL scanner subprocesses** declared in each stack adapter's
+  `scanners:` section (bandit / pip-audit / ruff / flake8 / radon for Python;
+  cppcheck / clang-tidy for C++) through the single `_run` chokepoint, with the same
+  `python -m <mod>` interpreter rewrite `verify.py` uses so the Python scanners run in
+  the project's `.venv`.
+- **Normalizes heterogeneous output into ONE canonical finding shape**
+  `{severity, category, file, line, rule, message, source_tool}`, where `severity` is
+  the ordered vocabulary `critical > high > medium > low > info` and `category` is
+  `security | quality | perf` (`limitations` is reserved for the model-facing
+  synthesis stage). The dispatch mirrors `verify.py`'s `result_format -> parser` table.
+- **Auto-detects the stack** when no `--adapter` is given, reusing
+  `ingest.detect_stacks()` / `walk_repo()` and resolving the matching adapter from
+  `config.yml` `stacks[].adapter` (an explicit `--adapter` always wins); the chosen
+  adapter and its provenance are reported as `adapter_source`.
+- **Excludes generated / vendored directories** (`build/`, `_deps/`, `.venv`,
+  `node_modules`, `__pycache__`, ...) so a CMake `build/` tree that vendors
+  GoogleTest's own files never becomes a finding - the report is grounded in the
+  project's OWN sources.
+- **Applies thresholds via the shared `apply_thresholds()` gate** and emits a
+  **JSON-serializable, prioritized** report (findings sorted most-severe-first).
+- **Calls ZERO model and ZERO network-to-model** (the same hard constraint as
+  `ingest.py` / `verify.py`; a static guard test enforces it). The only subprocess it
+  ever spawns is a local adapter-declared scanner tool. A MISSING tool degrades to a
+  structured `tool_unavailable` marker, never a crash and never a fabricated finding.
+- Scanner presence is reported through the **non-gating** `scanner` / `scanner_cpp`
+  doctor categories via `--doctor`, reusing `ingest.doctor()` so the preflight is
+  identical to `verify.py`'s.
+
+### Model-facing step: summarize / prioritize / name limitations
+
+The read-only **`apia-reviewer`** agent runs `scan.py`, reads its structured report,
+and only **summarizes and prioritizes the REAL findings** grounded in the scanner
+output and the cited code - it never invents a finding, reports a missing scanner
+honestly, and asks ONE specific clarifying question when uncertain. Four Tier-2 skills
+(`apia-security-scan`, `apia-quality-scan`, `apia-perf-scan`, `apia-limitations`; the
+heavy scans use `context: fork`), the Tier-1 **`/apia-review`** prompt, and a concise
+Tier-0 reviewer protocol express this step across every portability tier. On **Visual
+Studio 2022** (Tier-0 + Tier-1 only, no Tier-2 skills/agents) the reviewer runs as a
+single Tier-0/Tier-1 agent driving `scan.py` for both Python and C++.
+
+### The composable-gate interface (the stable contract)
+
+Both the off-model engine and the model-facing step consume one stable interface, so a
+standalone review AND a **future greenfield-generation gate** can call it without
+rework. `scan(repo, adapter, options)` returns a JSON-serializable report:
+
+```
+{
+  "repo": <basename>, "repo_path": <abs>, "stack": <adapter name>,
+  "adapter_source": <how the adapter was chosen>, "category": <scanned category>,
+  "findings": [ {severity, category, file, line, rule, message, source_tool}, ... ],
+  "counts_by_severity": {critical, high, medium, low, info},
+  "counts_by_category": {security, quality, perf, ...},
+  "threshold": { ...effective thresholds... },
+  "gate": {
+    "passed": bool,
+    "fail_on_severity": <level or null>,
+    "failing_severities": [...], "failing_counts": {category: {limit, actual}},
+    "reasons": [human-readable strings]
+  },
+  "tools": { ...scanner presence (doctor-style)... },
+  "scanners": [ ...per-scanner meta... ],
+  "unavailable_tools": [ ...missing tool names... ]
+}
+```
+
+The gate decision itself is produced by the SINGLE shared function:
+
+```
+apply_thresholds(findings, thresholds) -> gate dict
+```
+
+`thresholds` (from the `review` block in `.apia/config.yml`) may declare
+`fail_on_severity` (any finding at that severity or more severe fails) and
+`max_findings` (per-category caps plus an optional `total`). BOTH a standalone reviewer
+and a future generation gate read this SAME `review.thresholds` block and call
+`apply_thresholds()` with the SAME signature, so the gate is **composable without
+rework**. The structured report can later feed the **iterate-to-best** eval-loop
+(`.apia/scripts/evalloop.py`) as a quality gate alongside the Layer-1 eval data: the
+interface is structured now, the full **fusion is DEFERRED** (see section 7).
+
+> **The user's requirement:** once greenfield generation ships, **each generated
+> increment passes through these SAME reviewer gates** (`scan.py` +
+> `apply_thresholds()`) before it is accepted - the generator does not get a weaker
+> bar than a human-authored change.
+
+---
+
 ## 4. Component inventory (what ships in the package)
 
 ```
@@ -312,23 +414,31 @@ would remain opt-in and off by default.
       apia-clarify.prompt.md
       apia-test.prompt.md
       apia-apply.prompt.md
+      apia-iterate.prompt.md
+      apia-review.prompt.md          # Tier 1: drives the read-only reviewer (VS 2022-safe)
     skills/                          # Tier 2: rich, token-efficient skills (VS Code host)
       apia-ingest/SKILL.md           # context: fork
       apia-feature-loop/SKILL.md
       apia-test-authoring/SKILL.md   # context: fork
+      apia-security-scan/SKILL.md    # context: fork  (reviewer scan skill)
+      apia-quality-scan/SKILL.md     # context: fork  (reviewer scan skill)
+      apia-perf-scan/SKILL.md        # context: fork  (reviewer scan skill)
+      apia-limitations/SKILL.md      # context: fork  (model synthesis over findings + KB)
     agents/                          # Tier 2: per-stage custom agents + handoffs (approval gates)
       apia-planner.agent.md          # read-only tools
       apia-implementer.agent.md      # edit tools
       apia-tester.agent.md           # test/terminal tools
+      apia-reviewer.agent.md         # read-only tools (runs scan.py, summarizes findings)
   .apia/
     knowledge/                       # cached, committed project knowledge base
-    config.yml                       # token budget, max_iterations cap, eval_data policy, thresholds
+    config.yml                       # token budget, max_iterations cap, eval_data policy, review thresholds
     scripts/                         # off-model preprocessing + eval machinery (no model calls)
       ingest.py                      #   static indexing / detection / doctor preflight
       verify.py                      #   deterministic verifier + --iterate loop surface
       evaldata.py                    #   Layer 1: grounded eval-data generation
       evalloop.py                    #   Layer 2: iterate-to-green loop + acceptance gate
-    adapters/                        # per-stack build/test maps (py + cpp complete; csharp/groovy stubs)
+      scan.py                        #   Reviewer: off-model scanners -> canonical findings + composable gate
+    adapters/                        # per-stack build/test + scanner maps (py + cpp complete; csharp/groovy stubs)
   docs/
     ARCHITECTURE.md                  # this document
 ```
@@ -397,12 +507,29 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   build-only phase, CTest/GoogleTest result parsing - MSBuild/VSTest unit-tested only). The four
   cross-stack features (doctor, project-facts memory, dry-run, build-only) ship with it. **DEFERRED
   within Phase 2:** C#/Groovy adapters to parity, and concrete **MCP data sources**.
-- **DEFERRED - Continuous risk/vulnerability/quality scanning**: dependency CVE checks, static
-  analysis, complexity/duplication/debt signals, surfaced as prioritized findings - all via Copilot
-  tool-use and off-model scanners, respecting the token budget.
-- **DEFERRED** - Improvement-opportunity suggestions grounded in the knowledge base.
-- **DEFERRED** - auto-push / PR / MR / CI integration and VS Code marketplace extension packaging
-  (APIA stays strictly local; the user pushes manually).
+- **DELIVERED - Continuous security/quality/perf/limitations scanning (the Reviewer)**: dependency
+  CVE checks (pip-audit), SAST-style vulnerability patterns (bandit; cppcheck security),
+  lint/complexity/duplication/dead-code (ruff/flake8/radon; clang-tidy/cppcheck), and perf smells
+  (radon; cppcheck performance) are run by the **off-model `scan.py` engine** and surfaced as a
+  prioritized, grounded findings report; the model only summarizes/prioritizes (never invents a
+  finding), respecting the `token_budget.review` ceiling. See section 3d. The findings report and
+  the shared `apply_thresholds()` gate are exposed as a **composable interface** so a future
+  greenfield-generation gate can reuse them.
+- **DEFERRED - Improvement-opportunity suggestions** grounded in the knowledge base.
+- **DEFERRED - Greenfield generation** (`apia-architect` / `apia-scaffold` / `apia-e2e-verify`): a
+  from-scratch generation flow. The structure is in place but the flow is not built. **The user's
+  requirement is that once it ships, each generated increment passes through the SAME reviewer gates
+  (`scan.py` + `apply_thresholds()`) and the TEST layers before it is accepted** - the generator
+  gets no weaker a bar than a human-authored change.
+- **DEFERRED - `apia-orchestrator` task-graph autonomy**: multi-feature planning/execution as a
+  dependency graph.
+- **DEFERRED - Batched-upfront-clarification rework**: ask all clarifying questions once, upfront.
+- **DEFERRED - Full iterate-to-best fusion**: wiring the reviewer findings report into the
+  `evalloop.py` iterate-to-best quality gate alongside the Layer-1 eval data. The composable
+  interface exists today (section 3d); the fusion itself is deferred.
+- **DEFERRED - auto-push / PR / MR / CI integration** and VS Code **marketplace extension**
+  packaging (APIA stays strictly local; the user pushes manually).
+- **DEFERRED - Cross-team / org knowledge & capability sharing + plugins** (see Phase 4).
 - **DEFERRED** - an **optional, opt-in self-hosted second-opinion reviewer** (off by default).
   Phase 1/2 ship **no** second/external/hosted LLM verifier (see section 3c): the verifier stays
   deterministic tooling and the loop rides only the user's Copilot session.
