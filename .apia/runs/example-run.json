@@ -1,0 +1,138 @@
+{
+  "audit": [
+    {
+      "detail": "validated graph of 3 task(s); global_max_tasks=20, per_task_max_iterations=3",
+      "event": "graph_built",
+      "task_id": null,
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_ready",
+      "task_id": "ingest-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_running",
+      "task_id": "ingest-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_done",
+      "task_id": "ingest-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_ready",
+      "task_id": "code-on-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_running",
+      "task_id": "code-on-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_done",
+      "task_id": "code-on-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_ready",
+      "task_id": "review-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_running",
+      "task_id": "review-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": null,
+      "event": "task_done",
+      "task_id": "review-pyapp",
+      "ts": "2026-10-13T13:56:34Z"
+    },
+    {
+      "detail": "all 3 task(s) done",
+      "event": "run_done",
+      "task_id": null,
+      "ts": "2026-10-13T13:56:34Z"
+    }
+  ],
+  "created": "2026-10-13T13:56:34Z",
+  "global_max_tasks": 20,
+  "goal": "add a rounding option to the pyapp calculator report",
+  "per_task_max_iterations": 3,
+  "repo": null,
+  "run_id": "run-example",
+  "status": "done",
+  "stop_reason": null,
+  "tasks": [
+    {
+      "approvals": [],
+      "ask": null,
+      "deps": [],
+      "id": "ingest-pyapp",
+      "result": {
+        "engine": "live_stage",
+        "verdict": {
+          "knowledge_written": [
+            "project-map.md",
+            "architecture.md"
+          ],
+          "note": "live Copilot ingest of samples/pyapp; worked-example verdict for the proof",
+          "status": "ok"
+        }
+      },
+      "status": "done",
+      "type": "ingest"
+    },
+    {
+      "approvals": [],
+      "ask": null,
+      "deps": [
+        "ingest-pyapp"
+      ],
+      "id": "code-on-pyapp",
+      "result": {
+        "engine": "evalloop.evaluate",
+        "verdict": {
+          "iterations": 1,
+          "max_iterations": 3,
+          "note": "live Copilot wrote the rounding option on samples/pyapp; evalloop drove verify to green under the hard cap -- worked-example verdict for the proof",
+          "status": "green"
+        }
+      },
+      "status": "done",
+      "type": "code"
+    },
+    {
+      "approvals": [],
+      "ask": null,
+      "deps": [
+        "code-on-pyapp"
+      ],
+      "id": "review-pyapp",
+      "result": {
+        "engine": "scan.apply_thresholds",
+        "verdict": {
+          "findings": 0,
+          "gate": "fail_on_severity=high, security<=0",
+          "note": "live Copilot ran the reviewer; scan.apply_thresholds passed the severity gate -- worked-example verdict for the proof",
+          "status": "pass"
+        }
+      },
+      "status": "done",
+      "type": "review"
+    }
+  ],
+  "updated": "2026-10-13T13:56:34Z"
+}

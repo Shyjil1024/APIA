@@ -493,11 +493,140 @@ does the mechanical work for free), and stays **strictly local** (no auto-push/P
 
 ### Deferred (clearly labeled)
 
-The following remain **DEFERRED** (see section 7): `apia-orchestrator` full task-graph
-autonomy; the full iterate-to-best threshold tuning/fusion into `evalloop.py`; the
-**C#/Groovy** adapters to parity; concrete **MCP data sources**; auto-push/PR/MR/CI
-integration; the VS Code **marketplace extension**; and cross-team/org knowledge &
-capability sharing + plugins.
+The following remain **DEFERRED** (see section 7): the full iterate-to-best threshold
+tuning/fusion into `evalloop.py`; the **C#/Groovy** adapters to parity; concrete **MCP
+data sources**; auto-push/PR/MR/CI integration; the VS Code **marketplace extension**;
+and cross-team/org knowledge & capability sharing + plugins. (`apia-orchestrator`
+task-graph autonomy is now **DELIVERED** -- see section 3f.)
+
+---
+
+## 3f. The Orchestrator (Phase 4) and its task-graph autonomy
+
+A single change (or a single generated project) is **one** trip through the loop with
+a human at every gate. A whole feature on an existing project, or a whole greenfield
+app, is **many** such trips. The orchestrator's one job is to **reduce manual
+interaction**: it takes a larger goal, breaks it into an **ordered task graph**, and
+drives each task through the loops already built in sections 3a-3e, running
+autonomously **between batched human checkpoints** instead of stopping one-per-task.
+Like every other capability it splits into an **off-model engine** and a
+**model-facing step**, and it is a **conductor, not a reimplementation**: it reuses the
+SAME gates from sections 3b/3d/3e verbatim.
+
+The off-model engine (`.apia/scripts/orchestrate.py`) does ONLY deterministic work --
+build + validate the graph, detect cycles fail-loud, pick the ready topological
+frontier, apply one state transition at a time (unblocking dependents), persist and
+reload a resumable run-state, enforce the global stop bound, and render the audit
+trail. It makes **zero network and zero LLM calls** (the same hard constraint as
+`ingest.py` / `verify.py` / `scan.py` / `scaffold.py` / `evalloop.py`; a static guard
+test enforces it) and spawns **no subprocess of its own** -- any build/test run reaches
+`verify.py`'s single `_run()` chokepoint only INDIRECTLY, through the engines it
+composes. The LIVE Copilot session does the per-task reasoning/generation/fix and the
+batched checkpoint conversation.
+
+### The task-graph model
+
+A run is an ordered list of **task nodes**, each a dict with a stable shape:
+
+| Key | Meaning |
+|---|---|
+| `id` | Unique, non-empty string id (unique across the graph). |
+| `type` | One of `ingest`, `code`, `test`, `generation`, `review` -- what the task does and therefore which engine routes it. |
+| `deps` | Ids this task depends on; a task is **ready** only when every dep is `done`. A self-dependency or a dep on an unknown id is rejected. |
+| `status` | Lifecycle: `pending` -> `running` -> `done`, or `failed`; `blocked` when a dependency failed. |
+| `result` | The verdict object the delegated engine (or the live stage) returned, recorded **verbatim** (no re-decision). |
+| `approvals` | The batched human approvals recorded at a checkpoint. |
+| `ask` | The specific question surfaced when the task cannot proceed (fail-loud, never a silent loop). |
+
+`build_graph` validates the graph fail-loud (unique ids, known types/statuses, deps
+reference existing ids, no self-dependency). `detect_cycles` returns the offending
+cycle path and `topological_order` **rejects a cyclic graph** rather than silently
+running it. `ready_tasks` returns the stable, id-sorted topological **frontier** -- the
+set the live session may dispatch next. The run is **strictly local**; nothing is ever
+auto-pushed.
+
+### Batched checkpoints
+
+The orchestrator asks **everything knowable up front** and then runs **uninterrupted to
+the next checkpoint**, instead of interrupting at every file or task. The live planner
+turns the goal into the task graph and gathers the clarifying questions and approvals
+for the whole upcoming batch in one turn (bounded by the advisory `token_budget.
+orchestrate` ceiling); the deterministic engine then advances the frontier task by task
+without further prompting until it reaches a meaningful checkpoint or genuine
+uncertainty. The human still approves at the batched checkpoints and at the final apply
+-- this is **minimal, well-placed interaction, not zero interaction**.
+
+### Resumable run-state + human-readable audit log
+
+Every transition is persisted. `new_run_state` captures the resolved bounds, the
+normalized task nodes, and an opening `graph_built` entry; `save_run_state` writes the
+document **atomically** (temp file + `os.replace`, so a crash mid-write never leaves a
+half-written run-state) and `load_run_state` is a lossless round-trip. The run-state
+schema is `{run_id, goal, repo, created, updated, global_max_tasks,
+per_task_max_iterations, status, stop_reason, tasks, audit}`.
+
+The documents live under `.apia/runs/` and are **committed on purpose** -- the same
+discipline as `.apia/knowledge/` -- so a long autonomous run **survives sessions and
+windows**, can be stopped in one session and resumed in another (a fresh process reads
+the saved frontier and continues), and is shared with the team. `render_audit` prints a
+plain-text, chronological **audit trail** (`graph_built`, `task_ready`, `task_running`,
+`task_done`, `task_failed`, `task_blocked`, `global_cap_reached`, `run_stopped`,
+`run_done`) readable without parsing JSON. A committed example lives at
+`.apia/runs/example-run.json` + `.apia/runs/example-run.audit.log` (see `docs/PROOF.md`).
+
+### Gate reuse (the conductor adds no new knobs)
+
+Each task is ROUTED to the EXISTING gate engine; the orchestrator records the verdict
+and **never re-decides**:
+
+1. **`code` / `test`** -> `evalloop.evaluate`, which already enforces the HARD
+   `max_iterations` cap (section 3b) and applies the reviewer severity gate via
+   `scan.apply_thresholds(findings, review.thresholds)` (section 3d). The per-task cap
+   REUSES `evalloop.resolve_max_iterations` -- there is **no second per-task cap**.
+2. **`generation`** -> `scaffold.decide_generation` / `scaffold.generation_gate`, the
+   SAME two-tier honest generation gate from section 3e.
+3. **`ingest` / `review`** -> live Copilot stages with no deterministic gate engine of
+   their own; the orchestrator records the live stage's supplied verdict as-is.
+
+So the generator and every orchestrated task get **no weaker a bar** than a
+human-authored change, and the thresholds/caps live in exactly one place
+(`.apia/config.yml`).
+
+### Bounded + fail-loud behavior
+
+The run can never grind indefinitely or silently ship something broken. Three
+independent bounds enforce this:
+
+- **Global stop bound** -- `orchestrate.global_max_tasks` in `.apia/config.yml` caps how
+  many tasks a single run may move to running/done; reaching it **HALTS** the run
+  `stopped` with a `global_cap_reached` reason (exit non-zero), rather than continuing.
+- **Per-task iteration cap** -- the REUSED `max_iterations` bounds each code/test task's
+  self-correction loop; a persistently-red task stops at the cap with a specific ask.
+- **Stop-and-ask on a stuck task** -- a task set `failed` **HALTS** the whole run
+  (status `failed`, exit non-zero) and leaves its dependents **blocked**, surfacing that
+  task's specific `ask` so a human can resolve it, rather than looping or guessing. A
+  graph that can no longer progress (nothing ready, not all done) stops as a named
+  deadlock.
+
+### The honest definition of "done"
+
+The orchestrator makes a multi-task run require **few, well-placed human inputs** instead
+of one-per-task. It does **not** turn APIA into a flawless zero-interaction auto-coder:
+the human still approves at the batched checkpoints and the final apply, a stuck task
+stops and asks rather than forcing a green, and nothing is auto-pushed. "**Minimal
+interaction, not no interaction**" -- the same honesty discipline as the Tier-2 shapes
+in section 3e. It rides the user's Copilot session (no external LLM), stays
+token-efficient (the off-model engine does the graph/state mechanics for free), and
+stays **strictly local**.
+
+### Deferred (clearly labeled)
+
+The following remain **DEFERRED** (see section 7): the full **iterate-to-best** threshold
+tuning/fusion beyond wiring the existing reviewer + eval gates; the **C#/Groovy**
+adapters to parity; concrete **MCP data sources**; **auto-push/PR/MR/CI/packaging/
+signing** (APIA stays strictly local; the user pushes manually); the VS Code
+**marketplace extension**; and **cross-team/org/external knowledge & capability sharing +
+plugins**.
 
 ---
 
@@ -516,6 +645,7 @@ capability sharing + plugins.
       apia-iterate.prompt.md
       apia-review.prompt.md          # Tier 1: drives the read-only reviewer (VS 2022-safe)
       apia-new.prompt.md             # Tier 1: drives greenfield generation (VS 2022-safe)
+      apia-run.prompt.md             # Tier 1: drives the orchestrator multi-task run (VS 2022-safe)
     skills/                          # Tier 2: rich, token-efficient skills (VS Code host)
       apia-ingest/SKILL.md           # context: fork
       apia-feature-loop/SKILL.md
@@ -526,14 +656,17 @@ capability sharing + plugins.
       apia-limitations/SKILL.md      # context: fork  (model synthesis over findings + KB)
       apia-scaffold/SKILL.md         # context: fork  (generation: detect shape + emit skeleton)
       apia-e2e-verify/SKILL.md       # context: fork  (generation: build+run+test + gate)
+      apia-orchestrate/SKILL.md      # context: fork  (orchestrator: task-graph / run-state / resume)
     agents/                          # Tier 2: per-stage custom agents + handoffs (approval gates)
       apia-planner.agent.md          # read-only tools
       apia-implementer.agent.md      # edit tools
       apia-tester.agent.md           # test/terminal tools
       apia-reviewer.agent.md         # read-only tools (runs scan.py, summarizes findings)
       apia-architect.agent.md        # generation: drives scaffold.py (shape -> skeleton -> verify -> gate)
+      apia-orchestrator.agent.md     # orchestrator: plans the task graph, drives orchestrate.py, batched checkpoints
   .apia/
     knowledge/                       # cached, committed project knowledge base
+    runs/                            # committed resumable run-state + human-readable audit log (orchestrator)
     config.yml                       # token budget, max_iterations cap, eval_data policy, review thresholds, generate.supported_shapes
     scripts/                         # off-model preprocessing + eval machinery (no model calls)
       ingest.py                      #   static indexing / detection / doctor preflight
@@ -542,6 +675,7 @@ capability sharing + plugins.
       evalloop.py                    #   Layer 2: iterate-to-green loop + acceptance gate
       scan.py                        #   Reviewer: off-model scanners -> canonical findings + composable gate
       scaffold.py                    #   Phase 3: shape detect + skeleton emit + build/run/test normalize + gate
+      orchestrate.py                 #   Phase 4: task-graph build/validate + run-state/resume + global stop + audit
     adapters/                        # per-stack build/test + scanner + generate maps (py + cpp complete; csharp/groovy stubs)
   samples/
     generated/                       # committed generated proof projects (sources only; build/ + out/ gitignored)
@@ -634,12 +768,19 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   `cpp_console`, `cpp_library`) are generated, built, run, and unit-tested green end-to-end
   in-sandbox; the **honest-partial shapes** (`gui`/`embedded`/`driver`) are generated + build-checked
   + unit-tested and reported PARTIAL, never faked green. Committed proof projects live under
-  `samples/generated/` (see `docs/PROOF.md`). **DEFERRED within Phase 3:** `apia-orchestrator` full
-  task-graph autonomy, the full iterate-to-best threshold tuning/fusion, the C#/Groovy generation
-  adapters, and MCP data sources (listed below).
-- **DEFERRED - `apia-orchestrator` task-graph autonomy**: multi-feature planning/execution as a
-  dependency graph.
-- **DEFERRED - Batched-upfront-clarification rework**: ask all clarifying questions once, upfront.
+  `samples/generated/` (see `docs/PROOF.md`). **DEFERRED within Phase 3:** the full iterate-to-best
+  threshold tuning/fusion, the C#/Groovy generation adapters, and MCP data sources (listed below).
+- **DELIVERED (Phase 4) - `apia-orchestrator` task-graph autonomy**: multi-task planning/execution
+  as a dependency graph, backed by the off-model `orchestrate.py` engine. It drives a larger goal
+  through the EXISTING loops (ingest/clarify/modify/test, the eval/iterate loop, the greenfield
+  generation gate, the reviewer gate) as an ordered task graph, running autonomously between BATCHED
+  human checkpoints and keeping a persistent, resumable run-state + human-readable audit log under
+  `.apia/runs/` (committed, like the knowledge base). It is bounded + fail-loud (global stop bound +
+  the REUSED per-task `max_iterations` cap + stop-and-ask on a stuck task), reuses the SAME gates
+  (`evalloop.evaluate`, `scan.apply_thresholds`, `scaffold.generation_gate`) with no new knobs, and
+  stays strictly local (no auto-push). "Minimal interaction, not no interaction" (see section 3f).
+- **DELIVERED (Phase 4) - Batched-upfront-clarification**: the orchestrator asks everything knowable
+  up front, then runs uninterrupted to the next checkpoint (section 3f).
 - **DEFERRED - Full iterate-to-best fusion**: wiring the reviewer findings report into the
   `evalloop.py` iterate-to-best quality gate alongside the Layer-1 eval data. The composable
   interface exists today (section 3d); the fusion itself is deferred.

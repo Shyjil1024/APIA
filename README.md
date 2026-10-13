@@ -48,6 +48,19 @@ waits for you.
   must check. Each generated increment passes the SAME reviewer gate as a human change.
   It is **local-only** (no auto-push/PR/CI) and runs on **VS 2022 as a single agent**
   via `/apia-new`. See `docs/ARCHITECTURE.md` section 3e and `docs/PROOF.md`.
+- **Orchestrator (multi-task autonomy), bounded and HONEST.** A whole feature or app is
+  many tasks. The orchestrator breaks a larger goal into an **ordered task graph** and
+  drives each task through the loops above, running autonomously **between batched human
+  checkpoints** instead of one gate per task. An off-model engine
+  (`.apia/scripts/orchestrate.py`) does the deterministic graph/state mechanics (build +
+  validate, cycle detection, the ready frontier, a resumable run-state + human-readable
+  audit log under `.apia/runs/`, the global stop bound); the live Copilot session does the
+  per-task work. It is **bounded + fail-loud** (global stop bound + the REUSED per-task
+  `max_iterations` cap + stop-and-ask on a stuck task), reuses the SAME reviewer/eval/
+  generation gates with no new knobs, is **strictly local** (no auto-push), and runs on
+  **VS 2022 as a single agent** via `/apia-run`. It is **minimal interaction, not zero
+  interaction** -- the human still approves at the batched checkpoints and the final apply.
+  See `docs/ARCHITECTURE.md` section 3f and `docs/PROOF.md`.
 - **Portable.** Degrades gracefully by host capability (Tier 0/1/2). See
   `docs/PORTABILITY.md`.
 
@@ -65,13 +78,15 @@ and per-stack adapters live under `.apia/`:
   agents/                    # Tier 2: per-stage custom agents + approval-gate handoffs
 .apia/
   knowledge/                 # cached, committed project knowledge base (shared with the team)
+  runs/                      # committed resumable run-state + audit log (orchestrator)
   config.yml                 # token budget, confidence threshold, stacks, knowledge_dir
   scripts/                   # off-model preprocessing (indexing, test discovery)
   adapters/                  # per-stack build/test command maps
 ```
 
-The `.apia/knowledge/` directory is **committed on purpose** so the learned
-knowledge is shared across the team and survives sessions.
+The `.apia/knowledge/` and `.apia/runs/` directories are **committed on purpose** so the
+learned knowledge and any long autonomous run are shared across the team and survive
+sessions and windows.
 
 ## Primary stacks
 
@@ -109,3 +124,74 @@ python3 -m pytest samples/legacy_pyapp -q
 
 See `docs/ARCHITECTURE.md` for the full design and `docs/PHASE-1-TASKS.md` for the
 Phase-1 task breakdown.
+
+## Running a multi-task orchestrator run
+
+For a goal bigger than one change -- a whole feature on an existing project, or a whole
+greenfield app -- use the orchestrator instead of running the loop by hand per task. In
+your Copilot chat, start it with the Tier-1 prompt:
+
+```
+/apia-run add a rounding option to the pyapp calculator report
+```
+
+The orchestrator plans the goal into an **ordered task graph** (tasks with
+dependencies), asks **everything knowable up front** in one batched clarify, and then
+runs **uninterrupted to the next checkpoint** instead of stopping at every task. The
+off-model engine does the deterministic mechanics; you drive it with the same script the
+agent uses:
+
+```sh
+# 1. Build + validate the graph and write the initial run-state (one process).
+.venv/bin/python .apia/scripts/orchestrate.py --init "add a rounding option to the pyapp calculator report" \
+    --tasks .apia/runs/example-tasks.json --run-state .apia/runs/my-run.json --run-id my-run
+
+# 2. See the ready frontier at any time.
+.venv/bin/python .apia/scripts/orchestrate.py --status --run-state .apia/runs/my-run.json
+
+# 3. Advance a task (running -> done); a 'done' unblocks its dependents.
+.venv/bin/python .apia/scripts/orchestrate.py --step --run-state .apia/runs/my-run.json --task-id ingest-pyapp --to running
+.venv/bin/python .apia/scripts/orchestrate.py --step --run-state .apia/runs/my-run.json --task-id ingest-pyapp --to done
+
+# 4. Read the human-readable audit trail.
+.venv/bin/python .apia/scripts/orchestrate.py --audit --run-state .apia/runs/my-run.json
+```
+
+(The step status flag is `--to` / `--status-value`; argparse reserves `--status` for the
+status action.)
+
+### Batched-checkpoint UX
+
+You answer a batch of clarifying questions and grant a batch of approvals **once**, up
+front, then the run advances task by task on its own until it reaches a meaningful
+checkpoint or hits **genuine uncertainty**. You still approve at the batched checkpoints
+and at the final apply, and nothing is ever auto-pushed. This is **minimal, well-placed
+interaction -- not zero interaction**: a stuck task **stops and asks a specific
+question** rather than looping forever or silently applying something broken.
+
+### Stop and resume across sessions and windows
+
+The run-state and audit log are written under `.apia/runs/` and are **committed on
+purpose** (like `.apia/knowledge/`). You can **stop** a run at any point -- just stop
+interacting -- and **resume** it later from a fresh session or another window: a new
+`orchestrate.py` process reads the saved run-state and continues from exactly the frontier
+where it stopped. Because the files are committed, a teammate can inspect or continue the
+same run. A committed example is in `.apia/runs/example-run.json` +
+`.apia/runs/example-run.audit.log` (see `docs/PROOF.md`).
+
+### Bounded and fail-loud
+
+Every run is bounded three ways so it can never grind forever or ship something broken:
+a **global stop bound** (`orchestrate.global_max_tasks` in `.apia/config.yml`), the
+**REUSED per-task** `max_iterations` cap on each code/test task's self-correction loop,
+and **stop-and-ask** on a failed task (it halts the run, leaves dependents blocked, and
+surfaces a specific question). A cyclic graph is **rejected** at init, never run.
+
+### Visual Studio 2022
+
+VS 2022 loads the Tier-1 **prompt** and the concise Tier-0 instructions but **not** the
+Tier-2 agents/skills. The orchestrator is designed for this: `/apia-run` is a Tier-1
+prompt and the orchestration protocol is summarized in `.github/copilot-instructions.md`,
+so a **single agent** runs the whole task-graph flow on VS 2022 (the same single-agent
+degradation as `/apia-review` and `/apia-new`). See `docs/PORTABILITY.md` for the full
+tier matrix.

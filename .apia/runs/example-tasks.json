@@ -1,0 +1,7 @@
+{
+  "tasks": [
+    {"id": "ingest-pyapp", "type": "ingest", "deps": []},
+    {"id": "code-on-pyapp", "type": "code", "deps": ["ingest-pyapp"]},
+    {"id": "review-pyapp", "type": "review", "deps": ["code-on-pyapp"]}
+  ]
+}

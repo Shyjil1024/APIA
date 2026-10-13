@@ -32,6 +32,15 @@ token_budget:
                     # this budget bounds the context Copilot consumes per
                     # generation increment. Advisory, not a hard stop; the hard
                     # stop is max_iterations below.
+  orchestrate: 3000 # soft ceiling for the Phase-4 ORCHESTRATOR's model-facing
+                    # work (planning the task graph from a goal, and the batched
+                    # clarify/approval checkpoints). The off-model orchestrate.py
+                    # engine does the deterministic work for free (graph build/
+                    # validate, topological frontier, resumable run-state, global
+                    # stop + audit trail); this budget bounds the context Copilot
+                    # consumes per planning/checkpoint turn. Advisory, not a hard
+                    # stop; the per-task hard stop is max_iterations below and the
+                    # global stop is orchestrate.global_max_tasks.
 
 # max_iterations: HARD cap on the Layer-2 self-correction loop (verifier runs ->
 # model proposes a fix -> re-verify). Iteration exists to AVOID wasted tokens by
@@ -156,6 +165,47 @@ generate:
     - gui
     - embedded
     - driver
+
+# orchestrate: Phase-4 ORCHESTRATOR policy -- the task-graph autonomy engine that
+# REDUCES manual interaction by driving a larger goal (a feature on an existing
+# project, or a greenfield app spec) through the EXISTING loops (ingest -> clarify
+# -> modify -> test, the eval/iterate self-correction loop, the greenfield
+# generation gate, the Phase-2 reviewer gate) as an ORDERED task graph, running
+# autonomously between BATCHED human checkpoints and keeping a persistent,
+# resumable run-state / audit log. It is semi-autonomous: "minimal interaction",
+# NOT "no interaction" -- the human still approves at the batched checkpoints and
+# the final apply, and nothing is auto-pushed (strictly local).
+#
+# MODEL vs OFF-MODEL SPLIT (same discipline as the engines above): the off-model
+# engine (.apia/scripts/orchestrate.py) does ONLY the deterministic mechanics --
+# build + validate the task graph, pick the ready topological frontier, detect
+# cycles fail-loud, persist/reload a resumable run-state, enforce the global stop
+# bound, and render the audit trail. It NEVER calls a model or network and NEVER
+# itself executes the per-task work. The LIVE Copilot session does the per-task
+# reasoning/generation/fix and the batched checkpoint conversation.
+#
+# This block adds NO duplicate knobs on purpose:
+#   * the PER-TASK iteration cap REUSES `max_iterations` above (every code/test
+#     task runs through the eval loop, bounded by that one hard cap -- there is
+#     NO second per-task cap here);
+#   * the severity gate reuses `review.thresholds`;
+#   * the anti-circularity gate reuses `eval_data.acceptance_criteria_gate`.
+#
+#   global_max_tasks  the GLOBAL stop bound: the maximum number of tasks a single
+#                     run may move to running/done before it HALTS fail-loud
+#                     (surfaces where it stopped and asks) rather than grinding on
+#                     indefinitely. Always a positive int. NOTE: this bounds tasks
+#                     that have STARTED, not tasks that have COMPLETED -- a task
+#                     counts against the budget the moment it moves to running and
+#                     keeps counting through done/failed, so set the cap by how
+#                     many tasks you want to allow to begin, not finish.
+#   run_state_dir     where the resumable run-state / audit-log documents live.
+#                     Relative to the .apia/ directory and COMMITTABLE (consistent
+#                     with knowledge_dir above), so a long autonomous run survives
+#                     sessions/windows and is shared with the team.
+orchestrate:
+  global_max_tasks: 20
+  run_state_dir: runs/
 
 # cpp: OPTIONAL per-project C++ overrides (a FALLBACK, never required). APIA
 # detects the build system, test framework, and config first (see
