@@ -253,6 +253,46 @@ invariants:
     - roundtrip_identity
 
 # ---------------------------------------------------------------------------
+# OPTIONAL Phase-3 GENERATION section. The minimal DETERMINISTIC emission facts
+# the off-model generation engine (.apia/scripts/scaffold.py) consults when it
+# emits a greenfield C++ project of a given SHAPE. OPTIONAL and consistent with
+# the sections above: scaffold.py's _adapter_fragment() reads
+# `generate.templates.<shape>` (a dict per shape) WHEN PRESENT and falls back to
+# its built-in templates otherwise. The CMakeLists template mirrors
+# samples/cppapp: a library target holds the logic, GoogleTest is fetched via
+# FetchContent, and gtest_discover_tests registers the suite with CTest -- so a
+# generated project builds + tests with the portable `build_systems.cmake` +
+# `test_frameworks.googletest` path above, no extra toolchain. The build command
+# REUSES build_systems.cmake; the test template is a GoogleTest smoke suite. See
+# .apia/adapters/README.md for the schema.
+generate:
+  templates:
+    cpp_console:
+      # CMakeLists emitted for a C++ console app: library target + console
+      # executable that links it + GoogleTest via FetchContent (mirrors
+      # samples/cppapp). Fragment hints name the sources the engine lays down.
+      build_file: CMakeLists.txt
+      skeleton:
+        - "src/main.cpp"                 # console entrypoint linking the library
+        - "src/<name>_lib.cpp"           # library source (app:: smoke stub)
+        - "include/<name>_lib.h"         # public header (app:: namespace)
+      # Build REUSES the adaptive cmake build system declared above.
+      build_command: "cmake -S . -B build && cmake --build build"
+      # Smoke/run: the built console executable prints its stub result.
+      run_command: "./build/{name}"
+      # GoogleTest smoke suite registered with CTest (test_frameworks.googletest).
+      test_template: tests/test_smoke.cpp
+    cpp_library:
+      build_file: CMakeLists.txt
+      skeleton:
+        - "src/<name>_lib.cpp"           # library source (app:: smoke stub)
+        - "include/<name>_lib.h"         # public header (app:: namespace)
+      build_command: "cmake -S . -B build && cmake --build build"
+      # Libraries have no runnable binary; the smoke signal is the test suite.
+      run_command: "ctest --test-dir build --output-on-failure"
+      test_template: tests/test_smoke.cpp
+
+# ---------------------------------------------------------------------------
 # OPTIONAL per-project override (FALLBACK, not a requirement).
 #
 # DETECT FIRST: APIA detects the build system, framework, and config above and

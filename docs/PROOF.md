@@ -20,6 +20,7 @@ and the C++ adapter (`.apia/adapters/cpp.yml`).
 | `samples/legacy_pyapp` | Python | **No tests** (legacy) | Characterization tests pin current behavior, then a safe change keeps them green + a new test passes |
 | `samples/cppapp` | C++ (CMake + GoogleTest) | Has a green test suite | Build-only compile check + CTest regression guard + a worked change with a real before/after delta |
 | `samples/legacy_cppapp` | C++ (CMake + GoogleTest) | Originally **no tests** | Characterization tests pin current behavior; build-only is the regression signal before they exist |
+| `samples/generated/*` | Python + C++ | Generated from scratch | Phase-3 greenfield generation: five shapes generated-built-run-tested green + gated, plus an honest-partial `gui` that reports partial (see the Generation proof below) |
 
 ## Prerequisites
 
@@ -468,6 +469,116 @@ build/vendored-dir exclusion, and the no-LLM/no-network static guard.
 
 ---
 
+## Greenfield-generation proof (Phase 3)
+
+Generation is proven the same way as the loop and the Reviewer: the off-model engine
+`.apia/scripts/scaffold.py` emits a deterministic skeleton for a detected shape, then
+`verify_generated` drives **build -> run -> unit tests** through `verify.py`'s existing
+machinery and `generation_gate` reuses `scan.apply_thresholds`. `scaffold.py` makes
+**zero LLM and zero network-to-model calls** (a static guard test in `test_scaffold.py`
+enforces it) and spawns **no subprocess of its own** - every build/test routes through
+`verify.py`'s single `_run()` chokepoint.
+
+The **run** step is a **real execution of the generated project's runnable entrypoint/
+binary**, not an alias of the unit-test phase. `verify_generated` resolves the shape's
+`generate.templates.<shape>.run_command` from the adapter, substitutes the project name,
+and executes it through `verify.py`'s `_run()` chokepoint from the project directory
+(for C++, **after** the build phase so the binary exists):
+
+| Shape | What `run` actually executes |
+|---|---|
+| `python_cli` | `python -m <name>` (the generated `__main__` entrypoint prints and exits 0) |
+| `python_library` | `python -c "import <name>"` (import smoke; libraries have no entrypoint) |
+| `python_web_api` | `python -c "from <name>.app import health; print(health())"` |
+| `cpp_console` | `./build/<name>` (the built console binary) |
+| `cpp_library` | `ctest --test-dir build --output-on-failure` (a library's idiomatic run) |
+
+The result's `run` field reports that execution (`ran`/`passed`/`returncode` + a short
+stdout/stderr tail) and is **distinct** from the `tests` field (the unit-test counts). A
+`run` that exits non-zero makes a fully-verifiable shape **not ok** - the run is never
+faked green; for a fully-verifiable shape `ok = build ok (if any) AND tests green AND run
+passed`.
+
+The committed proof projects live under `samples/generated/` (sources only; their
+`build/` and `out/` directories are gitignored by the `samples/**/build/` and
+`samples/**/out/` rules). Each was emitted by `scaffold.py --emit` from the approved spec
+under `samples/generated/specs/`, then enriched with a tiny bit of real, idiomatic
+feature code + feature tests (this models the LIVE Copilot generation step, so "it
+actually runs" is a meaningful claim and not an empty stub).
+
+### Executed in-sandbox vs. fixture-only (read this first)
+
+- **EXECUTED for real in this Linux sandbox (generated -> built -> run -> unit-tested ->
+  gated):** all **five** fully-verifiable shapes - `python_cli`, `python_library`,
+  `python_web_api` (Python, fast), and `cpp_console`, `cpp_library` (C++, CMake fetches +
+  builds GoogleTest live). The honest-partial `gui` shape was also EXECUTED (emit +
+  verify) to prove it reports **partial, never green**.
+- **The web-API dependency WAS installed and the endpoint WAS served:** `flask` installed
+  into the `.venv` (network is OPEN), and the smoke test hits a **real** `GET /health`
+  route via Flask's in-process test client (a WSGI request, no live socket). This is an
+  **executed** path, not a fixture - there is **no fixture-only fallback in play** for the
+  web-API shape here. (The framework-agnostic `health()` unit test remains in the skeleton
+  as the no-dependency fallback, but it is not the only thing exercised.)
+- **No fixture-only generation path is claimed.** Every shape above was built/run/tested
+  for real; nothing here is a static-string assertion.
+
+### Reproduce it
+
+```sh
+# detect + emit (deterministic) for any shape
+python3 .apia/scripts/scaffold.py --emit samples/generated/specs/python_cli.json \
+    --dest /tmp/gen_cli
+# build + run + unit-test the COMMITTED sample and normalize the result
+python3 .apia/scripts/scaffold.py --verify samples/generated/python_cli \
+    --shape python_cli --adapter .apia/adapters/python.yml --json
+```
+
+### Observed results (captured from real runs)
+
+| Shape | Adapter | `--verify` result | `run` (real entrypoint/binary) | Gate (`scan.apply_thresholds`) |
+|---|---|---|---|---|
+| `python_cli` | python | `ok=true partial=false`, **5 passed**, 0 failed | `python -m <name>` -> `ran=true passed=true` (prints greeting) | **PASSED** (0 findings) |
+| `python_library` | python | `ok=true partial=false`, **6 passed**, 0 failed | `python -c "import <name>"` -> `ran=true passed=true` | **PASSED** (0 security) |
+| `python_web_api` | python | `ok=true partial=false`, **4 passed**, 0 failed (3 hit a real served endpoint) | `import <name>.app; health()` -> `ran=true passed=true` | **PASSED** (0 security) |
+| `cpp_console` | cpp | `build=passed`, `ok=true partial=false`, **3 passed**, 0 failed | `./build/<name>` -> `ran=true passed=true` (prints computations) | **PASSED** |
+| `cpp_library` | cpp | `build=passed`, `ok=true partial=false`, **4 passed**, 0 failed | `ctest ...` -> `ran=true passed=true` (library's idiomatic run) | **PASSED** |
+| `gui` (honest-partial) | python | `ok=false partial=true`, non-empty `unverified_aspects` | not executed (no entrypoint; stays honest-partial) | n/a (never green by design) |
+
+The Python samples carry a `.bandit` config that skips **B101** (`assert_used`): pytest
+tests use bare `assert` by design, so B101 is a standard false positive for a pytest
+project. This is **not** a weakening of the security gate - real vulnerabilities
+(e.g. `B602` shell-injection, `B105` hardcoded secrets) are still reported and still fail
+the gate; only the test-assert noise is skipped, exactly as a human-authored pytest
+project would configure it.
+
+### Honest-partial proof (never a faked green)
+
+```sh
+python3 .apia/scripts/scaffold.py --verify samples/generated/gui --shape gui \
+    --adapter .apia/adapters/python.yml --json
+```
+
+Captured result: `ok=false`, `partial=true`, and `unverified_aspects` reads
+*"GUI behavior: windows, widgets and user interaction cannot be auto-verified without a
+human at a display; verify the UI manually."* The sample also ships a plain-language
+`PARTIAL.md`. This proves the e2e-verify **reports** partial rather than faking a green
+for a shape that inherently cannot be auto-verified in a headless environment.
+
+### CI-asserted
+
+`.apia/scripts/tests/test_generation_e2e.py` encodes all of the above so CI asserts it:
+it copies each committed sample's **sources** to a tmp dir, runs
+`scaffold.verify_generated` for real (the C++ cases **build GoogleTest live**, guarded by
+`shutil.which('cmake')`/`shutil.which('ctest')` so the suite stays portable), asserts the
+normalized result is green, scans the copy and asserts `generation_gate` **passes**,
+hits the web-API's real `/health` endpoint via the Flask test client, and proves the
+`gui` sample reports partial/never-green. `.apia/scripts/tests/test_scaffold.py` adds the
+unit-level coverage (shape detection, emission, the honest-partial path, the gate
+delegation, the iterate cap + acceptance gate, and the no-LLM/no-network static guard).
+These RUN and pass in this sandbox.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:
@@ -496,3 +607,12 @@ scanners against `samples/pyapp` and the real `cppcheck`/`clang-tidy` against
 `samples/cppapp`, the fixture-based per-tool normalizers, the `apply_thresholds()` gate,
 missing-tool degradation, stack auto-detection, the generated/vendored-dir exclusion,
 and the no-LLM/no-network static guard. These RUN and pass in this sandbox.
+
+`.apia/scripts/tests/test_generation_e2e.py` adds the Phase-3 generation coverage: it
+exercises each committed `samples/generated/*` project through `scaffold.verify_generated`
++ `generation_gate` for real (Python fast; C++ builds GoogleTest live, guarded by
+`shutil.which('cmake')`/`shutil.which('ctest')`), hits the web-API's real `/health`
+endpoint via the Flask test client, and proves the `gui` sample reports partial/never
+green. `.apia/scripts/tests/test_scaffold.py` adds the unit-level generation coverage
+(detection, emission, honest-partial, gate delegation, iterate cap + acceptance gate, and
+the no-LLM/no-network static guard). These RUN and pass in this sandbox.

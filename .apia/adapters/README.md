@@ -217,6 +217,45 @@ request.
 | `description` | string | Human-readable rule. |
 | `checks` | list[string] | Built-in invariant ids the Layer-1 invariant runner recognizes (e.g. `row_count_matches_input`, `no_nans`, `roundtrip_identity`); unknown ids are ignored. |
 
+## Phase-3 `generate` section (used by `python.yml` and `cpp.yml`)
+
+An **optional** top-level section carrying the minimal **deterministic emission
+facts** the off-model generation engine (`.apia/scripts/scaffold.py`) consults
+when it emits a greenfield project of a given **shape**. Like the eval-data
+sections it is optional: `scaffold.py`'s `_adapter_fragment()` reads
+`generate.templates.<shape>` (a dict per shape) **when present** and falls back
+to its built-in templates otherwise, so an adapter without a `generate` section
+(e.g. a stub) still generates correctly. The engine only reads the mechanical
+facts; Copilot writes the feature logic live. The supported shape ids live in
+`.apia/config.yml` under `generate.supported_shapes` (the authoritative list
+`scaffold.py` resolves REPO-FIRST), and the generation gate reuses the SAME
+`review.thresholds` + `max_iterations` -- no new thresholds are declared here.
+
+```yaml
+generate:
+  templates:
+    <shape>:               # a supported shape id (e.g. python_cli, cpp_console)
+      build_file: <string>       # build-file emitted (pyproject.toml / CMakeLists.txt)
+      skeleton: [<string>, ...]  # skeleton fragment hints (source/package paths)
+      build_command: <string>    # OPTIONAL build/compile command (C++ reuses build_systems.cmake)
+      run_command: <string>      # smoke/run command for the generated project
+      test_template: <string>    # unit-test file the engine seeds under tests/
+```
+
+| Sub-key | Type | Meaning |
+|---|---|---|
+| `build_file` | string | The build/manifest file emitted for the shape (`pyproject.toml` for Python, `CMakeLists.txt` for C++, the latter mirroring `samples/cppapp`'s GoogleTest-via-FetchContent setup). |
+| `skeleton` | list[string] | Skeleton **fragment hints**: the source/package paths the engine lays down for the shape (e.g. `<name>/__main__.py`, `src/main.cpp`). `<name>` stands for the project name resolved at emit time. |
+| `build_command` | string | **Optional** build/compile command. For C++ it reuses the adaptive `build_systems.cmake` configure+build; Python needs none and may omit it. |
+| `run_command` | string | The smoke/run command that proves the generated project runs (a `python -m <name>` / import for Python, the built executable or `ctest` for C++). |
+| `test_template` | string | The unit-test file the engine seeds under `tests/` (a pytest smoke test for Python, a GoogleTest smoke suite for C++, the latter registered with CTest via `test_frameworks.googletest`). |
+
+These keys are **deterministic facts only** (no model inference): `scaffold.py`
+reads them WHEN PRESENT and otherwise uses its complete built-in templates, so
+the section is a hook, never a requirement. `python.yml` and `cpp.yml` declare
+`generate` for their supported shapes; `csharp.yml`/`groovy.yml` remain **stubs
+and omit it**.
+
 ## Contract notes
 
 - The **base** keys are **always present**; stub values are `null` (or a

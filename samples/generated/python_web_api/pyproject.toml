@@ -1,0 +1,13 @@
+[project]
+name = "todo_api"
+version = "0.1.0"
+description = "APIA-generated Python web-API skeleton."
+requires-python = ">=3.9"
+dependencies = ["flask>=3,<4"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

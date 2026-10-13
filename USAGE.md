@@ -100,9 +100,9 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | File / path | Purpose | Action |
 | --- | --- | --- |
 | `.github/copilot-instructions.md` | Tier-0 universal, always-on core protocol. Honored by **all** Copilot hosts, including JetBrains. This is the heart of the loop. | READ |
-| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply`, `apia-iterate`, `apia-review` (invoked as `/apia-ingest`, `/apia-feature`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
-| `.github/skills/*/SKILL.md` | Tier-2 Agent Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`, and the four reviewer scan skills (`apia-security-scan`, `apia-quality-scan`, `apia-perf-scan`, `apia-limitations`). The heavy stages run in `context: fork` for token isolation. VS Code Agent Host only. | READ |
-| `.github/agents/*.agent.md` | Tier-2 custom agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test), `apia-reviewer` (read-only). Their `handoffs` implement the approval gates. VS Code Agent Host only. | READ |
+| `.github/prompts/*.prompt.md` | Tier-1 portable slash-command entrypoints: `apia-ingest`, `apia-feature`, `apia-clarify`, `apia-test`, `apia-apply`, `apia-iterate`, `apia-review`, `apia-new` (invoked as `/apia-ingest`, `/apia-new`, and so on). Work in VS Code, Visual Studio, and JetBrains. | READ |
+| `.github/skills/*/SKILL.md` | Tier-2 Agent Skills: `apia-ingest`, `apia-feature-loop`, `apia-test-authoring`, the four reviewer scan skills (`apia-security-scan`, `apia-quality-scan`, `apia-perf-scan`, `apia-limitations`), and the two generation skills (`apia-scaffold`, `apia-e2e-verify`). The heavy stages run in `context: fork` for token isolation. VS Code Agent Host only. | READ |
+| `.github/agents/*.agent.md` | Tier-2 custom agents: `apia-planner` (read-only), `apia-implementer` (edit), `apia-tester` (test), `apia-reviewer` (read-only), `apia-architect` (generation). Their `handoffs` implement the approval gates. VS Code Agent Host only. | READ |
 
 ### Config, scripts, adapters, and knowledge (`.apia/`)
 
@@ -117,6 +117,7 @@ For each entry below, **Action** tells you whether you normally **EDIT**,
 | `.apia/scripts/evaldata.py` | Off-model **Layer-1** grounded eval-data generation: characterization capture, golden-file compare, built-in invariants, differential. **No model calls.** | LEAVE |
 | `.apia/scripts/evalloop.py` | Off-model **Layer-2** iterate-to-green loop: one deterministic cycle, the hard `max_iterations` cap, token-budget advisory, the acceptance-criteria gate, and a model-consumable structured failure report. **No model calls.** | LEAVE |
 | `.apia/scripts/scan.py` | Off-model **Reviewer** scanner engine: runs the adapter's local scanners, normalizes their output into one canonical finding shape, applies the composable `apply_thresholds()` gate, and emits a prioritized JSON report. Auto-detects the stack and excludes generated/vendored dirs. **No LLM/network calls.** | LEAVE |
+| `.apia/scripts/scaffold.py` | Off-model **greenfield-generation** engine: detects the project shape from an approved spec, emits the deterministic skeleton + build file, normalizes build/run/unit-test into the shared counts shape (full for the five verifiable shapes, honest-partial for gui/embedded/driver), and decides the generation gate by reusing `scan.apply_thresholds`. **No LLM/network calls.** | LEAVE |
 | `.apia/knowledge/` | The cached, **committed** project knowledge base. Intentionally committed (not git-ignored) so it is shared across the team and survives sessions. | LEAVE (generated) |
 
 ### Reference docs and samples
@@ -439,6 +440,109 @@ human-approval gate.
 Tier-2 skills/agents. The reviewer therefore runs as a **single Tier-0/Tier-1 agent**
 driving `scan.py` via `/apia-review`; the Tier-2 scan skills and the `apia-reviewer`
 custom agent are not honored there.
+
+---
+
+## Greenfield generation (new Python / C++ project)
+
+APIA can generate a **working, tested, runnable** Python **or** C++ project from a
+plain-language prompt, through the same human-gated discipline as every other stage.
+The off-model engine `.apia/scripts/scaffold.py` does the deterministic work (detect
+the project **shape**, emit the skeleton + build file, normalize build/run/test, decide
+the gate) and your Copilot session writes the feature code. `scaffold.py` makes **zero
+LLM and zero network-to-model calls**.
+
+### The two-tier honest model
+
+- **Tier 1 - generic shape generation:** the skeleton + build file + a runnable
+  entrypoint + a smoke test, emitted deterministically for the detected shape.
+- **Tier 2 - verified "it actually runs":** the generated project is **built, run, and
+  unit-tested** end to end. The **five fully-verifiable shapes** (`python_cli`,
+  `python_library`, `python_web_api`, `cpp_console`, `cpp_library`) must go **all-green**.
+  Shapes that inherently cannot be auto-verified in a headless environment
+  (`gui`/`embedded`/`driver`) are generated + build-checked + unit-tested and reported
+  **honest-partial** - APIA plainly tells you "I can't fully auto-verify this shape; here
+  is what I verified and what needs your manual check" and writes a `PARTIAL.md`. **A
+  faked green is impossible.**
+
+### The batched-clarify flow
+
+Generation asks its clarifying questions **once, upfront** (one batched round), not
+drip-fed:
+
+```
+your prompt -> ONE batched clarify (stack, shape, name, key features, acceptance criteria)
+            -> you approve the spec -> APIA generates skeleton + core features, then
+               builds/runs/tests -> human checkpoints (acceptance criteria, apply)
+```
+
+This is **minimal, well-placed human input - not zero interaction**. APIA never claims
+one sentence becomes flawless production code.
+
+### The acceptance-criteria confirmation checkpoint
+
+Acceptance criteria that describe **NEW** behavior the generated code does not yet
+exhibit must be **confirmed by you** before APIA grades the generation against them
+(the anti-circularity gate, `eval_data.acceptance_criteria_gate: true`). This stops the
+same model from both writing the code and inventing the test it grades itself against.
+
+### Generate a Python project (end to end)
+
+```sh
+# 1) detect the shape from an approved spec (JSON or YAML)
+python3 .apia/scripts/scaffold.py --detect-shape spec.json
+
+# 2) emit the deterministic skeleton for the detected shape
+python3 .apia/scripts/scaffold.py --emit spec.json --dest my_project
+
+#    (Copilot now writes the core feature code + feature tests into my_project)
+
+# 3) build + run + unit-test the generated project and normalize the result
+python3 .apia/scripts/scaffold.py --verify my_project --shape python_cli \
+    --adapter .apia/adapters/python.yml --json
+
+# 4) run the generation gate (same reviewer thresholds a human change passes)
+python3 .apia/scripts/scan.py my_project --adapter .apia/adapters/python.yml --json
+python3 .apia/scripts/scaffold.py --gate findings.json
+```
+
+`--verify` exits 0 only when the shape is fully verified green; the gate exits 0 only
+when the reviewer thresholds pass. The committed proof projects under
+`samples/generated/` show each shape (see `docs/PROOF.md`).
+
+### Generate a C++ project (end to end)
+
+C++ uses the same commands with the `cpp.yml` adapter; the CMake template fetches and
+builds GoogleTest via FetchContent (mirroring `samples/cppapp`), so the generated
+project is self-contained:
+
+```sh
+python3 .apia/scripts/scaffold.py --emit spec.json --dest my_cpp --adapter .apia/adapters/cpp.yml
+python3 .apia/scripts/scaffold.py --verify my_cpp --shape cpp_console \
+    --adapter .apia/adapters/cpp.yml --json
+```
+
+### Which deps / tools to install
+
+- **Python web-API shape (`python_web_api`):** a lightweight web framework. The sample
+  uses **Flask** (`pip install flask`); the generated smoke test hits a real endpoint via
+  Flask's in-process test client (no live socket). If you cannot install a framework, the
+  skeleton still ships a framework-agnostic `health()` handler you can unit-test.
+- **C++ shapes (`cpp_console` / `cpp_library`):** **cmake**, a C++ compiler (**g++** /
+  MSVC), and **ctest** on `PATH`. GoogleTest is fetched by CMake; nothing else to install.
+- Preflight any time with `python3 .apia/scripts/scaffold.py --doctor`.
+
+### Through Copilot
+
+Run the Tier-1 slash-command **`/apia-new`** (or, in the VS Code Agent Host, let the
+`apia-architect` agent drive the `apia-scaffold` + `apia-e2e-verify` skills). APIA runs
+the batched clarify, generates, verifies, and presents results at a human-approval gate.
+
+**On Visual Studio 2022:** VS 2022 honors **only Tier-0 + Tier-1 prompt files**, not
+Tier-2 skills/agents, so generation runs as a **single Tier-0/Tier-1 agent** via
+`/apia-new` driving `scaffold.py` for both Python and C++ - the `apia-architect` agent
+and the Tier-2 generation skills are not honored there. For a C++ project, run from the
+**VS 2022 Developer Command Prompt** so cmake/ctest/the compiler are on `PATH`.
 
 ---
 

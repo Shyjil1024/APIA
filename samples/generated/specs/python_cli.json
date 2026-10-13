@@ -1,0 +1,1 @@
+{"name": "greet_cli", "stack": "python", "kind": "cli", "summary": "a command-line tool using argparse that greets a user"}

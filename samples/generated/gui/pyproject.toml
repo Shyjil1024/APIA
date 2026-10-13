@@ -1,0 +1,13 @@
+[project]
+name = "paint_gui"
+version = "0.1.0"
+description = "APIA-generated gui skeleton (partial)."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
