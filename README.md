@@ -30,6 +30,14 @@ waits for you.
   model**; the off-model scripts call no model and the fix step is your live Copilot
   session only. New-behavior acceptance criteria need one human confirmation (the
   anti-circularity gate). See `docs/ARCHITECTURE.md` sections 3a-3c.
+- **Continuous Reviewer (security / quality / perf / limitations).** An off-model
+  engine (`.apia/scripts/scan.py`) runs real **local** scanners (bandit/pip-audit/
+  ruff/flake8/radon; cppcheck/clang-tidy), normalizes their output into one canonical
+  finding shape, and applies a composable severity gate; the model only summarizes and
+  prioritizes the grounded findings - it never invents one, and a missing scanner is
+  reported, not faked. The findings report and the shared gate are a **composable
+  interface** a future greenfield-generation gate reuses. See
+  `docs/ARCHITECTURE.md` section 3d.
 - **Portable.** Degrades gracefully by host capability (Tier 0/1/2). See
   `docs/PORTABILITY.md`.
 

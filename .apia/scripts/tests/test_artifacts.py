@@ -7,8 +7,10 @@ These parse the YAML frontmatter of every SKILL.md, *.agent.md, and *.prompt.md 
   ^[a-z0-9-]{1,64}$ (or the skill silently fails to load in the Copilot host).
 - `description` is present and <= 1024 chars.
 - Frontmatter is valid YAML.
-- apia-ingest and apia-test-authoring use `context: fork`.
+- Heavy skills (apia-ingest, apia-test-authoring, and the reviewer scan skills) use
+  `context: fork`.
 - Custom agents declare name/description/tools and handoffs with send: false.
+- The read-only agents (apia-planner, apia-reviewer) declare no edit/terminal tools.
 - No authored artifact instructs calling an external LLM API.
 
 PyYAML is required (already installed in .venv).
@@ -30,9 +32,26 @@ PROMPTS_DIR = os.path.join(GITHUB_DIR, "prompts")
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
-FORK_SKILLS = {"apia-ingest", "apia-test-authoring"}
-EXPECTED_SKILLS = {"apia-ingest", "apia-feature-loop", "apia-test-authoring"}
-EXPECTED_AGENTS = {"apia-planner", "apia-implementer", "apia-tester"}
+FORK_SKILLS = {
+    "apia-ingest",
+    "apia-test-authoring",
+    # Reviewer scan skills run heavy scanners -> forked context for token isolation.
+    "apia-security-scan",
+    "apia-quality-scan",
+    "apia-perf-scan",
+    "apia-limitations",
+}
+EXPECTED_SKILLS = {
+    "apia-ingest",
+    "apia-feature-loop",
+    "apia-test-authoring",
+    # FEAT-003 reviewer skills.
+    "apia-security-scan",
+    "apia-quality-scan",
+    "apia-perf-scan",
+    "apia-limitations",
+}
+EXPECTED_AGENTS = {"apia-planner", "apia-implementer", "apia-tester", "apia-reviewer"}
 EXPECTED_PROMPTS = {
     "apia-ingest",
     "apia-feature",
@@ -40,6 +59,7 @@ EXPECTED_PROMPTS = {
     "apia-test",
     "apia-apply",
     "apia-iterate",
+    "apia-review",
 }
 
 
@@ -188,6 +208,33 @@ def test_planner_is_read_only():
     data, _ = _frontmatter(path)
     tools = " ".join(data.get("tools", [])).lower()
     assert "edit" not in tools, "planner must be read-only (no edit tools)"
+
+
+def test_reviewer_is_read_only():
+    """FEAT-003: the reviewer only consumes scan.py output + reads code; it must have
+    no edit/terminal tools so it can never write a change itself."""
+    path = os.path.join(AGENTS_DIR, "apia-reviewer.agent.md")
+    data, _ = _frontmatter(path)
+    tools = " ".join(data.get("tools", [])).lower()
+    assert "edit" not in tools, "reviewer must be read-only (no edit tools)"
+    assert "terminal" not in tools, "reviewer must be read-only (no run/terminal tools)"
+
+
+def test_review_prompt_matches_read_only_reviewer():
+    """The review prompt must drive the read-only apia-reviewer and must not grant it
+    edit/terminal tools (mirrors the ingest-prompt guard for the planner)."""
+    path = os.path.join(PROMPTS_DIR, "apia-review.prompt.md")
+    data, _ = _frontmatter(path)
+    assert data.get("agent") == "apia-reviewer", (
+        "review prompt is expected to drive the read-only reviewer"
+    )
+    joined = " ".join(str(t).lower() for t in data.get("tools", []))
+    assert "edit" not in joined, (
+        "review prompt must not grant edit tools to the read-only reviewer"
+    )
+    assert "terminal" not in joined, (
+        "review prompt must not grant run/terminal to the read-only reviewer"
+    )
 
 
 def test_ingest_prompt_does_not_loosen_read_only_planner():
