@@ -62,6 +62,49 @@ frameworks:
   - unittest
 
 # ---------------------------------------------------------------------------
+# Phase-2 REVIEWER scanners. Maps a finding category (security | quality | perf)
+# to one or more declarative scanner definitions the off-model scan.py engine
+# runs. Each scanner_def is {tool, command, format}:
+#   tool    - human-readable scanner id (also used for doctor presence).
+#   command - FULL command string. `python -m <mod>` is rewritten to run under
+#             the SAME interpreter that launched scan.py (the project's .venv),
+#             exactly like verify.py's test commands; a native binary or an
+#             absolute path is run as-is.
+#   format  - selects the normalizer (source_tool -> parser dispatch) that reads
+#             the tool's machine-readable output into the canonical finding shape
+#             {severity, category, file, line, rule, message, source_tool}.
+# Scanners are ADVISORY: a missing tool degrades to a tool_unavailable marker
+# (never a crash, never a fabricated finding). All scanners here are EXECUTED
+# for real against samples/pyapp in the test suite (see test_scan.py). See
+# .apia/adapters/README.md for the schema contract.
+scanners:
+  security:
+    - tool: bandit
+      command: "python -m bandit -r . -f json"
+      format: bandit
+    - tool: pip-audit
+      # Audit the committed requirements file(s). Pointing at requirements.txt
+      # keeps the audit deterministic and project-scoped (vs. sweeping the whole
+      # ambient environment). The samples/pyapp fixture ships
+      # requirements-vuln.txt with a known-vulnerable pin so this produces a
+      # real asserted advisory; a project with no requirements file simply
+      # yields zero findings. pip-audit resolves advisories from its own DB;
+      # that is the SCANNER tool's behavior, never a scan.py model/LLM call.
+      command: "python -m pip_audit -f json -r requirements-vuln.txt"
+      format: pip_audit
+  quality:
+    - tool: ruff
+      command: "python -m ruff check --output-format json ."
+      format: ruff
+    - tool: flake8
+      command: "python -m flake8 ."
+      format: flake8
+  perf:
+    - tool: radon
+      command: "python -m radon cc -j ."
+      format: radon
+
+# ---------------------------------------------------------------------------
 # OPTIONAL Layer-1 eval-data sections. These ground the self-correction loop in
 # observable project behavior (not the agent's restatement of the request). They
 # are OPTIONAL: an adapter without them simply offers no golden/characterization/

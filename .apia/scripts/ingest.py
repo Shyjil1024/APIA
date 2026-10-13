@@ -564,6 +564,12 @@ def _compose_cpp_question(build_system, frameworks, kind):
 #   "optional" -> nice-to-have / alternative-invocation tools whose absence must
 #                 never gate a run (e.g. a standalone `pytest` shim, since the
 #                 Python path invokes `python -m pytest`).
+#   "scanner"     -> Phase-2 Reviewer scanner tools for the Python stack
+#                 (bandit/ruff/radon/pip-audit/flake8). ADVISORY: their absence
+#                 is REPORTED (warning) but NEVER a hard failure -- the reviewer
+#                 degrades gracefully to a tool_unavailable marker.
+#   "scanner_cpp" -> Phase-2 Reviewer scanner tools for the C++ stack
+#                 (cppcheck/clang-tidy). Also advisory / non-gating.
 DOCTOR_TOOLS = [
     ("cmake", ["--version"], "CMake build system (C++ configure/build).", "cpp"),
     ("ctest", ["--version"], "CTest test runner (C++).", "cpp"),
@@ -578,6 +584,18 @@ DOCTOR_TOOLS = [
     ("cl", [], "MSVC compiler cl.exe (Windows/VS Developer shell only; presence-only, no version probe).", "windows"),
     ("git", ["--version"], "Git.", "core"),
     ("pytest", ["--version"], "pytest (Python test runner).", "optional"),
+    # Phase-2 Reviewer scanners (scan.py). ADVISORY, never gating: a missing
+    # scanner is reported as a warning only. The Python scanners are invoked via
+    # `python -m <mod>` by the adapter so they run under the venv; the doctor
+    # PATH probe here reports whether a standalone shim is also on PATH (which
+    # these wheels install), so absence is informational, not a failure.
+    ("bandit", ["--version"], "bandit (Python security scanner; Reviewer).", "scanner"),
+    ("ruff", ["--version"], "ruff (Python lint/quality scanner; Reviewer).", "scanner"),
+    ("radon", ["--version"], "radon (Python complexity/perf scanner; Reviewer).", "scanner"),
+    ("pip-audit", ["--version"], "pip-audit (Python dependency CVE scanner; Reviewer).", "scanner"),
+    ("flake8", ["--version"], "flake8 (Python lint/quality scanner; Reviewer).", "scanner"),
+    ("cppcheck", ["--version"], "cppcheck (C++ security/quality/perf scanner; Reviewer).", "scanner_cpp"),
+    ("clang-tidy", ["--version"], "clang-tidy (C++ quality scanner; Reviewer).", "scanner_cpp"),
 ]
 # Tools that on Windows live only inside the "VS 2022 Developer Command Prompt".
 _VS_DEV_SHELL_TOOLS = {"msbuild", "cl"}

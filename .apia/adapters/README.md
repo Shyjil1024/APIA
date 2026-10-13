@@ -93,6 +93,48 @@ default path. For C++ a project may instead pin values in a `cpp:` block in
 `test_command_override`). DETECT FIRST: the adapter only falls back here on genuine
 doubt or an unusual layout the detector gets wrong.
 
+### `scanners` (Phase-2 Reviewer, used by `python.yml` and `cpp.yml`)
+
+An **optional** top-level section that wires the per-stack LOCAL scanner tools
+the off-model scanner engine (`.apia/scripts/scan.py`) runs for the Reviewer. It
+maps a **finding category** to one or more declarative scanner definitions. An
+adapter without it (e.g. a stub) is **refused** by `scan.py`
+(`StubAdapterError`) rather than reporting a false clean bill of health.
+
+```yaml
+scanners:
+  <category>:            # security | quality | perf
+    - tool: <id>         # human-readable scanner id (also used by doctor)
+      command: <string>  # FULL command string (see below)
+      format: <parser>   # selects the normalizer
+```
+
+| Sub-key | Type | Meaning |
+|---|---|---|
+| `tool` | string | Scanner id (e.g. `bandit`, `cppcheck`). Reported by `scan.py --doctor` for presence. |
+| `command` | string | **Full** command string run from the repo root. A `python -m <mod> ...` command is rewritten to run under the SAME interpreter that launched `scan.py` (the project's `.venv`), exactly like `verify.py`'s test commands; a native binary or an absolute path is run as-is. |
+| `format` | string | Selects the normalizer via the `source_tool -> parser` dispatch: `bandit` \| `pip_audit` \| `ruff` \| `flake8` \| `radon` \| `cppcheck` \| `clang_tidy`. |
+
+`format` is the key contract (the scanning counterpart to `result_format`): every
+normalizer maps its tool's native output into ONE canonical **finding** shape
+`{severity, category, file, line, rule, message, source_tool}`, where `severity`
+is the ordered vocabulary `critical > high > medium > low > info` and `category`
+is `security | quality | perf` (`limitations` is reserved for the model-facing
+synthesis stage). The engine aggregates all findings, applies the composable
+gate `apply_thresholds(findings, review.thresholds)` from `.apia/config.yml`, and
+emits a JSON-serializable report whose `gate` block both the standalone reviewer
+and a future greenfield-generation gate read.
+
+Scanners are **advisory**: a MISSING tool degrades to a structured
+`tool_unavailable` marker (never a crash, never a fabricated finding), and their
+presence is reported under the non-gating `scanner` / `scanner_cpp` doctor
+categories. `cppcheck` is declared **once** and **self-categorizes** (its own
+severity kind routes each finding to security/quality/perf), so a single
+`--enable=all` run feeds all three categories without duplication. Scope scanner
+commands to the project's own source tree (e.g. the C++ adapter scans
+`src include`, not `.`) so mining never sweeps a generated `build/` tree, mirroring
+the `golden.artifact_glob` scoping discipline.
+
 ## Layer-1 eval-data sections (used by `python.yml` and `cpp.yml`)
 
 Three **optional** top-level sections ground the self-correction loop in

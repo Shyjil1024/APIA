@@ -19,6 +19,11 @@ token_budget:
                     # loop: assembled structured failure + the smallest grounding
                     # needed for the next fix attempt. Advisory, not a hard stop;
                     # the hard stop is max_iterations below.
+  review: 4000      # soft ceiling for the Phase-2 Reviewer's model-facing
+                    # summarize/prioritize stage. The off-model scan.py engine
+                    # produces grounded findings for free; this budget bounds the
+                    # context Copilot consumes to summarize + prioritize them
+                    # (and name limitations). Advisory, not a hard stop.
 
 # max_iterations: HARD cap on the Layer-2 self-correction loop (verifier runs ->
 # model proposes a fix -> re-verify). Iteration exists to AVOID wasted tokens by
@@ -80,6 +85,29 @@ eval_data:
     - invariant
     - differential
   acceptance_criteria_gate: true
+
+# review: Phase-2 Reviewer policy + the COMPOSABLE severity gate. The off-model
+# scanner engine (.apia/scripts/scan.py) runs the per-stack scanners declared in
+# each adapter's `scanners:` section, normalizes their output into one canonical
+# finding shape {severity, category, file, line, rule, message, source_tool},
+# and calls apply_thresholds(findings, review.thresholds) to decide whether the
+# gate passes. BOTH the standalone reviewer AND the future greenfield-generation
+# gate read this SAME `thresholds` block, so the gate is composable without
+# rework (and the future iterate-to-best eval-loop fusion reuses it too). The
+# severity vocabulary is ordered: critical > high > medium > low > info.
+#   thresholds.fail_on_severity  any finding at this severity or MORE severe
+#                                fails the gate (e.g. `high` fails on high +
+#                                critical).
+#   thresholds.max_findings      optional per-category caps (security/quality/
+#                                perf) and an optional `total` cap; a category
+#                                over its cap fails the gate with a specific
+#                                reason. Here security is capped at 0 (any known
+#                                vulnerability or security smell fails).
+review:
+  thresholds:
+    fail_on_severity: high
+    max_findings:
+      security: 0
 
 # cpp: OPTIONAL per-project C++ overrides (a FALLBACK, never required). APIA
 # detects the build system, test framework, and config first (see

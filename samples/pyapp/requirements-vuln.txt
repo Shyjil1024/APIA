@@ -1,0 +1,12 @@
+# APIA Reviewer FIXTURE requirements file (intentional, detectable CVE).
+#
+# This pins a KNOWN-VULNERABLE dependency version so the Phase-2 Reviewer's
+# pip-audit scanner produces a REAL, asserted finding against samples/pyapp.
+# It is a FIXTURE ONLY: it is NOT installed, NOT referenced by pyproject.toml
+# (whose real dependencies stay empty / test-only), and NOT collected by the
+# pytest suite, so the existing green baseline is untouched. pip-audit reads it
+# via `-r requirements-vuln.txt` and reports the advisory without installing it.
+#
+# jinja2 2.10 has multiple known advisories (e.g. CVE-2019-10906 / PYSEC-2019-217,
+# CVE-2020-28493 / PYSEC-2021-66). DO NOT bump this; it is the reviewer fixture.
+jinja2==2.10

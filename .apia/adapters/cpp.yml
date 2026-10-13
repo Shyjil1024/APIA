@@ -161,6 +161,49 @@ test_frameworks:
     zero_tests_signal: "Total tests: 0"
 
 # ---------------------------------------------------------------------------
+# Phase-2 REVIEWER scanners (same schema as python.yml; see
+# .apia/adapters/README.md). Maps a finding category to one or more scanner
+# definitions {tool, command, format} the off-model scan.py engine runs. Each
+# command is a FULL string, so an absolute tool path (e.g. a full path to
+# clang-tidy) drops in unchanged; cppcheck/clang-tidy are NATIVE binaries (no
+# `python -m` rewrite). cppcheck emits XML v2 on stderr; its own per-finding
+# severity decides the category (performance -> perf, hard error -> security,
+# style/warning -> quality), so one cppcheck run feeds several categories.
+#
+# EXECUTED-HERE vs COMMAND-ASSEMBLY-ONLY (same honesty discipline as the MSBuild
+# notes above): in this sandbox cppcheck (2.22.0) and clang-tidy (LLVM) ARE
+# present and are EXECUTED for real against samples/cppapp in the test suite
+# (see test_scan.py). clang-tidy needs a compile database; the `-p build`
+# invocation below is command-assembly for the compile-database path, while the
+# executed test drives clang-tidy directly on the smelly source with explicit
+# flags. A MISSING tool on another host degrades to a tool_unavailable marker.
+# cppcheck is scoped to the project's SOURCE directories (`src include`) rather
+# than `.` on purpose: a `.` sweep drags in the gitignored CMake `build/` tree
+# (vendored GoogleTest etc.) and buries the project's own smells under thousands
+# of third-party-dependency parse artifacts -- the same "scope to the project's
+# own tree, not generated output" discipline the golden `artifact_glob` uses.
+#
+# cppcheck is declared ONCE (under `security` as the entry point) and SELF-
+# CATEGORIZES: a single `--enable=all` run emits security (hard errors, e.g.
+# uninitvar/memleak), quality (style/warning), and perf (performance) findings,
+# and the normalizer routes each finding to the right category by cppcheck's own
+# severity kind. Declaring it once therefore covers all three categories without
+# duplicating the same findings; the empty `quality`/`perf` entries below note
+# this (clang-tidy adds extra quality findings).
+scanners:
+  security:
+    - tool: cppcheck
+      command: "cppcheck --enable=all --xml --xml-version=2 src include"
+      format: cppcheck
+  quality:
+    # clang-tidy with a compile database (-p build). Command-assembly for the
+    # compile-database path; executed directly on sources in the test suite.
+    # (cppcheck's quality findings come from the self-categorizing run above.)
+    - tool: clang-tidy
+      command: "clang-tidy -p build src/smelly.cpp"
+      format: clang_tidy
+
+# ---------------------------------------------------------------------------
 # OPTIONAL Layer-1 eval-data sections. These ground the self-correction loop in
 # observable project behavior (not the agent's restatement of the request). They
 # are OPTIONAL: an adapter without them simply offers no golden/characterization/
