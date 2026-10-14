@@ -48,6 +48,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -141,6 +142,22 @@ DEFAULT_IGNORES = {
     "build",
     "dist",
     ".apia",  # never ingest the knowledge base itself
+    # Vendored / third-party dependency trees. These hold code the project does
+    # not own (e.g. a C++ repo that checks Eigen / nlohmann / GoogleTest into
+    # cpp/third-parties/), so walking them inflates the file/stack counts and
+    # buries the project's OWN sources. Skipped by default like build/ and
+    # node_modules/; conservative to common conventional directory names.
+    "third-parties",
+    "third-party",
+    "third_party",
+    "thirdparty",
+    "vendor",
+    "vendored",
+    "external",
+    "externals",
+    "extern",
+    "deps",
+    ".conan",
 }
 
 ARTIFACTS = [
@@ -904,39 +921,117 @@ def format_doctor_report(report):
     return "\n".join(lines) + "\n"
 
 
+# C++ test-case macros scanned (never executed) to count individual cases in a
+# C++ test file. The macro names mirror STACK_RULES['cpp']['frameworks'] markers
+# (GoogleTest TEST/TEST_F/TEST_P, Catch2 TEST_CASE, Boost.Test
+# BOOST_AUTO_TEST_CASE / BOOST_FIXTURE_TEST_CASE). A static regex scan locates
+# each macro invocation and captures its argument(s) as the case label.
+_CPP_TEST_CASE_RE = re.compile(
+    r"\b(TEST_F|TEST_P|TEST|TEST_CASE|BOOST_AUTO_TEST_CASE|BOOST_FIXTURE_TEST_CASE)"
+    r"\s*\(\s*([^),\s]+)",
+)
+
+# C++ source extensions that may hold tests (mirrors cpp.yml test_discovery_glob
+# which targets .cpp; .cc/.cxx are the common GoogleTest/Catch2 variants).
+_CPP_TEST_EXTS = (".cpp", ".cc", ".cxx")
+
+
+def _is_cpp_test_file(rel):
+    """Return True if a C++ source path follows a conventional test-file pattern.
+
+    Recognizes (aligned with cpp.yml test_discovery_glob):
+      * PascalCase ``*Test.cpp`` / ``*Tests.cpp``
+      * snake_case ``*_test.cpp`` / ``test_*.cpp`` (and .cc/.cxx variants)
+      * any C++ source living under a ``test/`` or ``tests/`` directory
+    Pure name/path matching; the file is never compiled or executed.
+    """
+    low = rel.lower()
+    if not low.endswith(_CPP_TEST_EXTS):
+        return False
+    base = os.path.basename(rel)
+    stem = base.rsplit(".", 1)[0]
+    # PascalCase convention: FooTest.cpp / FooTests.cpp.
+    if stem.endswith("Test") or stem.endswith("Tests"):
+        return True
+    low_base = base.lower()
+    low_stem = low_base.rsplit(".", 1)[0]
+    if low_stem.endswith("_test") or low_stem.startswith("test_"):
+        return True
+    # Any C++ source under a test/ or tests/ directory (normalize separators).
+    parts = rel.replace("\\", "/").split("/")
+    if any(p in ("test", "tests") for p in parts[:-1]):
+        return True
+    return False
+
+
+def _discover_cpp_test_cases(repo_path, rel):
+    """Return the list of C++ test-case labels found in a test file (static scan).
+
+    Counts GoogleTest/Catch2/Boost.Test case macros by regex. No execution; the
+    file is read once (bounded by the shared C++ scan cap). When a recognized
+    test file has no parseable macros (e.g. an unusual helper), a single
+    placeholder label is returned so the file still counts as holding a test and
+    the no-tests/legacy path does not false-trigger.
+    """
+    full = os.path.join(repo_path, rel)
+    cases = []
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(CPP_SCAN_BYTES_CAP)
+    except (OSError, UnicodeError):
+        text = ""
+    for macro, label in _CPP_TEST_CASE_RE.findall(text):
+        cases.append("{}({})".format(macro, label))
+    if not cases:
+        # A conventionally named test file with no parseable macro still counts
+        # as one test target (keeps test_count/test_file_count non-zero).
+        cases.append("(test case)")
+    return cases
+
+
 def discover_tests(repo_path, files):
-    """Discover Python test files and their test functions via AST (no exec).
+    """Discover test files and their test cases (multi-language, no exec).
 
     Returns a list of dicts: {path, functions:[names]}. Only static parsing is
     performed; test code is never imported or executed.
+
+    Python test files are parsed via AST (unchanged). C++ test files (GoogleTest
+    / Catch2 / Boost.Test, recognized by conventional naming aligned with
+    cpp.yml's test_discovery_glob) are scanned statically for their test-case
+    macros so ``test_count`` / ``test_file_count`` reflect them and the
+    no-tests/legacy path is not falsely triggered on a repo that has tests.
     """
     tests = []
     for rel in files:
         base = os.path.basename(rel)
-        looks_like_test = base.startswith("test_") or base.endswith("_test.py")
-        if not rel.endswith(".py"):
-            continue
-        # A file qualifies as a test target when its name follows the
-        # conventional pattern, or when it is conftest.py (shared fixtures live
-        # there). Non-test helpers inside a tests/ dir are skipped to avoid
-        # false positives.
-        if not (looks_like_test or base == "conftest.py"):
-            continue
-        full = os.path.join(repo_path, rel)
-        funcs = []
-        try:
-            with open(full, "r", encoding="utf-8", errors="replace") as fh:
-                tree = ast.parse(fh.read(), filename=rel)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef) and node.name.startswith("test"):
-                    funcs.append(node.name)
-                elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-                    for sub in node.body:
-                        if isinstance(sub, ast.FunctionDef) and sub.name.startswith("test"):
-                            funcs.append("{}.{}".format(node.name, sub.name))
-        except (OSError, SyntaxError, ValueError):
+        if rel.endswith(".py"):
+            # --- Python AST path (unchanged) ---
+            looks_like_test = base.startswith("test_") or base.endswith("_test.py")
+            # A file qualifies as a test target when its name follows the
+            # conventional pattern, or when it is conftest.py (shared fixtures
+            # live there). Non-test helpers inside a tests/ dir are skipped to
+            # avoid false positives.
+            if not (looks_like_test or base == "conftest.py"):
+                continue
+            full = os.path.join(repo_path, rel)
             funcs = []
-        tests.append({"path": rel, "functions": sorted(funcs)})
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                    tree = ast.parse(fh.read(), filename=rel)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef) and node.name.startswith("test"):
+                        funcs.append(node.name)
+                    elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                        for sub in node.body:
+                            if isinstance(sub, ast.FunctionDef) and sub.name.startswith("test"):
+                                funcs.append("{}.{}".format(node.name, sub.name))
+            except (OSError, SyntaxError, ValueError):
+                funcs = []
+            tests.append({"path": rel, "functions": sorted(funcs)})
+        elif _is_cpp_test_file(rel):
+            # --- C++ static-scan path (GoogleTest / Catch2 / Boost.Test) ---
+            cases = _discover_cpp_test_cases(repo_path, rel)
+            tests.append({"path": rel, "functions": sorted(cases)})
     return sorted(tests, key=lambda t: t["path"])
 
 
