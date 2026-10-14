@@ -190,3 +190,120 @@ def test_detect_stacks_surfaces_plugin_stack(tmp_path):
     plain.mkdir()
     (plain / "main.zig").write_text("pub fn main() void {}\n", encoding="utf-8")
     assert "zig" not in ingest.detect_stacks(str(plain), ingest.walk_repo(str(plain)))
+
+
+# --- Multi-language test discovery + vendored exclusion (Bugs 1 & 2) ---------
+
+def _make_cpp_repo(root):
+    """Lay down a tiny CMake + GoogleTest C++ repo with a vendored tree.
+
+    Mirrors the LibVITA layout that surfaced the bugs: PascalCase *Test.cpp
+    GoogleTest files under cpp/test/, plus a cpp/third-parties/ dir holding a
+    stray vendored .cpp that must NOT be ingested.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.14)\nproject(demo)\n"
+        "enable_testing()\nfind_package(GTest REQUIRED)\n", encoding="utf-8")
+    src = root / "cpp" / "src"
+    src.mkdir(parents=True)
+    (src / "math_functions.cpp").write_text(
+        "int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    # PascalCase GoogleTest files under cpp/test/.
+    test = root / "cpp" / "test"
+    test.mkdir(parents=True)
+    (test / "MathFunctionsTest.cpp").write_text(
+        "#include <gtest/gtest.h>\n"
+        "TEST(MathFunctions, Add) { EXPECT_EQ(add(1, 2), 3); }\n"
+        "TEST_F(MathFixture, Sub) { EXPECT_EQ(sub(2, 1), 1); }\n",
+        encoding="utf-8")
+    (test / "DataSampleTest.cpp").write_text(
+        "#include <gtest/gtest.h>\n"
+        "TEST(DataSample, Loads) { EXPECT_TRUE(true); }\n",
+        encoding="utf-8")
+    # Vendored / third-party tree that must be skipped entirely.
+    vendor = root / "cpp" / "third-parties" / "eigen"
+    vendor.mkdir(parents=True)
+    (vendor / "stray.cpp").write_text(
+        "// vendored dependency source, not project code\n"
+        "TEST(Vendored, ShouldBeIgnored) { }\n", encoding="utf-8")
+    return root
+
+
+def test_cpp_tests_counted_and_no_legacy_message(tmp_path):
+    """Bug 1: a C++ repo with *Test.cpp files reports a non-zero test count."""
+    repo = _make_cpp_repo(tmp_path / "cpprepo")
+    kd = str(tmp_path / "knowledge")
+    result = ingest.ingest(str(repo), kd)
+
+    # The three GoogleTest cases across the two test files must be counted.
+    assert result["test_count"] >= 3, result["test_count"]
+    inv = _read(kd, "test-inventory.md")
+    assert "MathFunctionsTest.cpp" in inv
+    assert "DataSampleTest.cpp" in inv
+    # The no-tests / legacy characterization path must NOT false-trigger.
+    assert "No tests found" not in inv
+    assert "Legacy / no-tests" not in inv
+
+
+def test_cpp_vendored_dir_excluded_from_walk(tmp_path):
+    """Bug 2: a vendored third-party dir is pruned from the walk + artifacts."""
+    repo = _make_cpp_repo(tmp_path / "cpprepo2")
+    kd = str(tmp_path / "knowledge")
+    ingest.ingest(str(repo), kd)
+
+    # The vendored source must not appear in any walked file / index entry.
+    files = ingest.walk_repo(str(repo))
+    assert not any("third-parties" in f for f in files), files
+    with open(os.path.join(kd, ingest.INDEX_FILE), "r", encoding="utf-8") as fh:
+        index = json.load(fh)
+    assert not any("third-parties" in p for p in index["sources"])
+    # The vendored TEST(...) macro must not inflate the test inventory either.
+    inv = _read(kd, "test-inventory.md")
+    assert "third-parties" not in inv
+    assert "stray.cpp" not in inv
+
+
+def test_default_ignores_cover_common_vendor_dirs():
+    """The vendored/third-party dir names are all in the default-ignore set."""
+    for name in ("third-parties", "third-party", "third_party", "thirdparty",
+                 "vendor", "vendored", "external", "externals", "extern",
+                 "deps", ".conan"):
+        assert name in ingest.DEFAULT_IGNORES, name
+
+
+def test_discover_tests_cpp_counts_framework_macros(tmp_path):
+    """discover_tests counts GoogleTest/Catch2/Boost macros via static scan."""
+    repo = tmp_path / "r"
+    t = repo / "tests"
+    t.mkdir(parents=True)
+    (t / "WidgetTest.cpp").write_text(
+        "#include <gtest/gtest.h>\n"
+        "TEST(Widget, A) {}\nTEST_F(WidgetFix, B) {}\nTEST_P(WidgetParam, C) {}\n",
+        encoding="utf-8")
+    (t / "catch_test.cpp").write_text(
+        "#include <catch2/catch.hpp>\nTEST_CASE(\"adds numbers\") {}\n",
+        encoding="utf-8")
+    files = ingest.walk_repo(str(repo))
+    tests = ingest.discover_tests(str(repo), files)
+    by_path = {os.path.basename(t["path"]): t for t in tests}
+    assert "WidgetTest.cpp" in by_path
+    assert len(by_path["WidgetTest.cpp"]["functions"]) == 3
+    assert "catch_test.cpp" in by_path
+    assert len(by_path["catch_test.cpp"]["functions"]) == 1
+
+
+def test_discover_tests_python_path_unchanged(tmp_path):
+    """Regression: the Python AST discovery path is unaffected by Bug 1 work."""
+    repo = tmp_path / "py"
+    repo.mkdir()
+    (repo / "test_sample.py").write_text(
+        "def test_one():\n    assert True\n\n"
+        "class TestGroup:\n    def test_two(self):\n        assert True\n",
+        encoding="utf-8")
+    files = ingest.walk_repo(str(repo))
+    tests = ingest.discover_tests(str(repo), files)
+    assert len(tests) == 1
+    funcs = tests[0]["functions"]
+    assert "test_one" in funcs
+    assert "TestGroup.test_two" in funcs

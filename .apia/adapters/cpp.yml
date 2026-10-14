@@ -29,6 +29,8 @@ test_command: "ctest --test-dir build --output-on-failure"
 test_discovery_glob:
   - "**/*_test.cpp"
   - "**/test_*.cpp"
+  - "**/*Test.cpp"      # PascalCase convention, e.g. DataSampleTest.cpp
+  - "**/*Tests.cpp"     # PascalCase plural, e.g. MathFunctionsTests.cpp
   - "test/**/*.cpp"
   - "tests/**/*.cpp"
 
