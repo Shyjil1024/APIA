@@ -1,0 +1,21 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Establish the green baseline before any change. Confirm the venv, run the full existing pytest suite with an extended timeout, and record the 275-test baseline so later features can prove nothing regressed.",
+  "status": "completed",
+  "steps": [
+    "Activate/confirm the venv at /projects/sandbox/.venv (python3.9 + pytest + PyYAML; bandit/ruff/radon/pip-audit/flake8; cppcheck/clang-tidy; cmake/g++/ctest; Flask).",
+    "Run `.venv/bin/python -m pytest .apia/scripts/tests/ -q` with a timeout >= 600000 ms (the C++ e2e tests build GoogleTest via CMake in real time; the full suite is ~220s and growing).",
+    "Confirm all 275 tests pass. Capture the exact count for later comparison.",
+    "Run `.venv/bin/python -m py_compile .apia/scripts/*.py` to confirm the scripts compile cleanly."
+  ],
+  "acceptance_criteria": [
+    "All 275 existing tests pass with the extended timeout.",
+    "py_compile reports no errors for the scripts under .apia/scripts/."
+  ],
+  "verification": [
+    ".venv/bin/python -m pytest .apia/scripts/tests/ -q (timeout >= 600000 ms) exits 0 with 275 passed"
+  ],
+  "blocked_reason": null,
+  "findings": "Baseline green: 275 passed in 220.62s with the extended timeout. Scripts compile. Branch iterate-to-best matches apia-origin/main."
+}

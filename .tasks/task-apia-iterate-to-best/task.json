@@ -1,0 +1,15 @@
+{
+  "task_id": "task-apia-iterate-to-best",
+  "task_description": "Phase 5 ITERATE-TO-BEST: fuse APIA's iterative self-correction loop (evalloop.py / verify.py --iterate) with the Phase-2 reviewer scanners (scan.py apply_thresholds vs review.thresholds) so iteration targets 'green AND meets configured quality/security/perf thresholds' instead of merely 'green'. Deliver ONE shared fused quality-gated acceptance decision (evalloop.evaluate_quality_gated) reused by verify.py --iterate, scaffold.decide_generation, and orchestrate.decide_task; fold the exact scanner findings into evalloop's existing structured failure report; track best-so-far with bounded convergence/stop-and-ask under max_iterations; keep thresholds tunable via existing review.thresholds (+ iterate-to-best knobs under existing structures). Add real tests, keep all 275 existing tests green and the no-LLM/no-network guard green, update docs/prompt/Tier-0.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "py_compile clean on all .apia/scripts/*.py. Full pytest suite 296 passed in ~254s (275 pre-existing unchanged + 18 Phase-5 feature tests + 3 review-fix tests) with the extended timeout. No Dockerfile for the scripts package (docker build N/A). Test quality verified: the new tests call the real evaluate_quality_gated with real scan.make_finding/apply_thresholds, run real pytest (pyapp) and real CMake+GoogleTest+CTest (cppapp), and assert the exact folded report keys (reviewer_gate/scanner_findings), best-so-far selection across iterations, cap stop-and-ask text, config-threshold tuning flipping the outcome, and gate-block parity across all three callers; they would fail if the Phase-5 production path were reverted. The previously-broken documented reproduction command now runs end-to-end via scan.py --json-only. Tier-0 copilot-instructions.md is 6362 bytes (< 6500 ceiling); apia-iterate prompt front-matter is valid YAML.",
+    "semantic_review": "v1 NEEDS_CHANGES (2 findings: broken --json reproduction command [blocking]; generation stop dropped best_so_far [non-blocking]) -> both fixed -> v2 APPROVED. Review artifacts: 2026-10-13-151847-review-v1.md, 2026-10-13-154120-review-v2.md."
+  }
+}

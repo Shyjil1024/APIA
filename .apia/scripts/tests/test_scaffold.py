@@ -393,6 +393,34 @@ def test_decide_generation_iterates_then_stops_at_cap():
     assert dec["reason"] == "max_iterations_reached"
     # Exactly cap-1 iterate decisions precede the stop.
     assert statuses.count("iterate") == cap - 1
+    # PARITY with the standalone iterate stop: the generation stop carries the
+    # best-so-far attempt (not a generic ask), and the ask names it.
+    assert "best_so_far" in dec
+    assert "BEST attempt so far" in dec["ask"]
+
+
+def test_decide_generation_stop_carries_best_so_far_with_residual():
+    # When the gate fails on a seeded HIGH finding (verify green), the generation
+    # stop at the cap must surface the SAME best-so-far record + residual summary
+    # the standalone iterate stop computes, for parity across entry points.
+    cap = evalloop.resolve_max_iterations()
+    state = evalloop.LoopState()
+    acc = {"is_new_behavior": False}
+    good_verify = {"ok": True, "partial": False}
+    findings = [{"severity": "high", "category": "security", "file": "a.py",
+                 "line": 1, "rule": "B602", "message": "shell=True",
+                 "source_tool": "bandit"}]
+    dec = None
+    for _ in range(cap + 3):
+        dec = scaffold.decide_generation({}, good_verify, findings,
+                                         acceptance=acc, state=state)
+        if dec["status"] == "stop":
+            break
+    assert dec["status"] == "stop"
+    assert dec["best_so_far"] is not None
+    # The residual summary reaches parity with evalloop's standalone stop ask.
+    assert evalloop._residual_summary(dec["best_so_far"]) in dec["ask"]
+    assert "high=1" in dec["ask"]
 
 
 def test_decide_generation_honest_partial_never_green():
@@ -432,3 +460,95 @@ def test_scaffold_makes_no_network_or_llm_calls():
     ]
     for token in forbidden:
         assert token not in src, "scaffold.py must not reference '{}'".format(token)
+
+
+# ===========================================================================
+# PHASE 5 -- ITERATE-TO-BEST verdict PARITY (scaffold side).
+# scaffold.decide_generation must DELEGATE the fused converged/needs_fix/stop
+# decision to the ONE shared evalloop.evaluate_quality_gated, so the SAME
+# reviewer-gate block + the SAME converged/needs_fix verdict come out as a direct
+# evalloop call on identical inputs. This proves scaffold is not a forked copy of
+# the decision. (The orchestrate side of the parity triple lives in
+# test_orchestrate.py.) These GENUINELY execute both production paths.
+# ===========================================================================
+
+
+def _parity_cycle(verify_result):
+    """Reconstruct the SAME precomputed cycle scaffold.decide_generation hands to
+    evaluate_quality_gated from a verify_result, so a direct evalloop call sees
+    byte-identical inputs (same shape scaffold builds internally)."""
+    verify_green = bool(verify_result.get("ok")) and not verify_result.get("partial")
+    return {
+        "status": "green" if verify_green else "needs_fix",
+        "iteration": None,
+        "remaining_iterations": None,
+        "summary": verify_result,
+        "eval_data": None,
+        "failure_report": None if verify_green else {
+            "ok": False, "repo": verify_result.get("repo"),
+            "adapter": verify_result.get("adapter"), "failing_phases": [],
+            "counts": {}, "regression_delta": None, "golden_failures": [],
+            "invariant_violations": [], "differential_regressions": [],
+            "partial": bool(verify_result.get("partial")),
+        },
+        "budget_advisory": None,
+    }
+
+
+def test_decide_generation_gate_fail_parity_with_evaluate_quality_gated():
+    """GREEN verify + a FAILING reviewer gate (high finding): scaffold yields
+    'iterate' (its vocabulary for needs_fix) with the SAME gate block the direct
+    shared decision produces -- the gate block is identical because both route
+    through scan.apply_thresholds via the one shared function."""
+    acc = {"is_new_behavior": False}  # grounded; no confirmation gate in play
+    verify_result = {"ok": True, "partial": False, "repo": "demo",
+                     "adapter": "python"}
+    findings = [scan.make_finding("high", "security", "x.py", 1, "B602",
+                                  "insecure call", "bandit")]
+
+    # (b) scaffold.decide_generation (delegates to the shared decision).
+    scaffold_dec = scaffold.decide_generation(
+        {}, verify_result, findings, acceptance=acc,
+        state=evalloop.LoopState())
+
+    # (a) direct evalloop.evaluate_quality_gated on the SAME inputs (same cycle,
+    # same findings, same resolved review.thresholds).
+    thresholds = scan.resolve_thresholds(scan.load_review_config())
+    evalloop_dec = evalloop.evaluate_quality_gated(
+        None, None,
+        {"cycle": _parity_cycle(verify_result), "findings": findings,
+         "thresholds": thresholds, "acceptance": acc},
+        evalloop.LoopState())
+
+    # Verdict parity: scaffold's 'iterate' == evalloop's 'needs_fix' (same
+    # not-converged conclusion), and the reviewer gate block is IDENTICAL.
+    assert scaffold_dec["status"] == "iterate"
+    assert evalloop_dec["status"] == "needs_fix"
+    assert scaffold_dec["gate"] == evalloop_dec["failure_report"]["reviewer_gate"]
+    assert scaffold_dec["gate"]["passed"] is False
+
+
+def test_decide_generation_gate_pass_parity_with_evaluate_quality_gated():
+    """GREEN verify + a PASSING reviewer gate: scaffold converges to 'green' and
+    the direct shared decision also converges to 'green' with the SAME passing
+    gate -- parity on the converged verdict."""
+    acc = {"is_new_behavior": False}
+    verify_result = {"ok": True, "partial": False, "repo": "demo",
+                     "adapter": "python"}
+    findings = [scan.make_finding("low", "quality", "a.py", 2, "E1", "m", "ruff")]
+
+    scaffold_dec = scaffold.decide_generation(
+        {}, verify_result, findings, acceptance=acc,
+        state=evalloop.LoopState())
+    thresholds = scan.resolve_thresholds(scan.load_review_config())
+    evalloop_dec = evalloop.evaluate_quality_gated(
+        None, None,
+        {"cycle": _parity_cycle(verify_result), "findings": findings,
+         "thresholds": thresholds, "acceptance": acc},
+        evalloop.LoopState())
+
+    assert scaffold_dec["status"] == "green"
+    assert evalloop_dec["status"] == "green"
+    # Both carry the SAME passing reviewer gate block.
+    assert scaffold_dec["gate"] == evalloop_dec["reviewer_gate"]
+    assert scaffold_dec["gate"]["passed"] is True

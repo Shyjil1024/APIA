@@ -1137,7 +1137,15 @@ def main(argv=None):
         help="Emit the machine-readable JSON report (in addition to the human "
              "summary).",
     )
+    parser.add_argument(
+        "--json-only", dest="json_only", action="store_true",
+        help="Emit ONLY the machine-readable JSON report (no human summary), so "
+             "the output is a valid JSON file you can redirect straight into "
+             "verify.py --findings. Implies --json.",
+    )
     args = parser.parse_args(argv)
+    if args.json_only:
+        args.json = True
 
     # Adapter resolution: an explicit --adapter ALWAYS wins (no detection).
     # Otherwise, when a repo path is given, AUTO-DETECT the stack (reusing
@@ -1182,17 +1190,18 @@ def main(argv=None):
         report = ingest.doctor(repo_path=(
             args.repo_path if args.repo_path and os.path.isdir(args.repo_path) else None
         ))
-        print(ingest.format_doctor_report(report), end="")
-        # Also show the adapter's own scanner table (which concrete scanners the
-        # resolved adapter would run and whether they are reachable).
-        adapter = load_adapter(adapter_path)
-        if adapter.get("scanners"):
-            tools = scanner_tools_report(adapter)
-            print("\nAdapter scanners ({}):".format(adapter.get("name", "unknown")))
-            for t in tools["scanners"]:
-                mark = "ok " if t["present"] else "MISSING"
-                print("  [{}] {:<12} ({}, {})".format(
-                    mark, t["tool"], t["format"], t["category"]))
+        if not args.json_only:
+            print(ingest.format_doctor_report(report), end="")
+            # Also show the adapter's own scanner table (which concrete scanners
+            # the resolved adapter would run and whether they are reachable).
+            adapter = load_adapter(adapter_path)
+            if adapter.get("scanners"):
+                tools = scanner_tools_report(adapter)
+                print("\nAdapter scanners ({}):".format(adapter.get("name", "unknown")))
+                for t in tools["scanners"]:
+                    mark = "ok " if t["present"] else "MISSING"
+                    print("  [{}] {:<12} ({}, {})".format(
+                        mark, t["tool"], t["format"], t["category"]))
         if args.json:
             print(json.dumps(report, indent=2, sort_keys=True))
         # Scanner presence is advisory: --doctor always exits 0 here (scanner
@@ -1216,7 +1225,8 @@ def main(argv=None):
     except StubAdapterError as exc:
         parser.error(str(exc))
 
-    print(format_human(report))
+    if not args.json_only:
+        print(format_human(report))
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
 

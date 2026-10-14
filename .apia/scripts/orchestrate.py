@@ -705,11 +705,16 @@ def decide_task(task, repo_path, inputs):
     This COMPOSES the existing gates; it NEVER re-implements a threshold or cap:
 
       * ``code`` / ``test`` -> evalloop.evaluate(repo_path, adapter, options,
-        state). evaluate already enforces the HARD max_iterations cap and applies
-        the reviewer severity gate via scan.apply_thresholds(findings,
-        review.thresholds) read from config. decide_task passes the LIVE Copilot
-        per-task work IN as ``inputs`` (adapter, options, state), since the model
-        executed verify/eval/fix in a live session -- this script never runs it.
+        state). evaluate now delegates to the SHARED fused decision
+        evalloop.evaluate_quality_gated, which enforces the HARD max_iterations
+        cap AND the reviewer gate (scan.apply_thresholds against review.thresholds)
+        when the LIVE scanner findings are threaded through
+        ``inputs['options']['findings']`` -- so "best" (green tests + reviewer
+        gate) means the SAME thing here as in the standalone loop and the
+        generation gate. decide_task passes the LIVE Copilot per-task work IN as
+        ``inputs`` (adapter, options incl. optional findings, state), since the
+        model executed verify/eval/fix in a live session -- this script never
+        runs it, and the fused verdict is recorded VERBATIM.
 
       * ``generation`` -> scaffold.generation_gate / scaffold.decide_generation.
         The LIVE generation + its verification result + reviewer findings arrive

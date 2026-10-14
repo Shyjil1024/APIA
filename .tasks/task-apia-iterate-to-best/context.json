@@ -1,0 +1,30 @@
+{
+  "project_type": "APIA - a portable GitHub Copilot skill package (off-model deterministic Python scripts + prompts/agents/skills) that runs entirely on the user's Copilot session, never calling an external LLM",
+  "language": "Python 3.9 (stdlib + optional PyYAML); C++ sample projects (CMake + GoogleTest + CTest) exercised by the C++ adapter",
+  "build_system": "No app build; the deliverables are Python scripts under .apia/scripts/. C++ e2e tests build GoogleTest via CMake in real time. Local venv at /projects/sandbox/.venv.",
+  "test_framework": "pytest. Tests live in .apia/scripts/tests/. 275 existing tests. C++ e2e tests build in real time and are slow (full suite ~220s and growing).",
+  "build_command": "no build step; python compileall check: .venv/bin/python -m py_compile .apia/scripts/*.py",
+  "test_command": ".venv/bin/python -m pytest .apia/scripts/tests/ -q  (ALWAYS use timeout >= 600000 ms; C++ e2e builds GoogleTest live)",
+  "verification_instructions": "1) run full pytest suite with >=600000ms timeout; all 275 existing tests + new tests green. 2) exercise the fused loop for real via verify.py --iterate and the shared decision function on sample repos; assert green+gate-pass => converged, green+gate-fail => needs_fix with scanner findings folded into the structured failure report, cap => stop-and-ask carrying best-so-far + residual summary. 3) assert verdict parity across the three callers (verify.py --iterate / scaffold.decide_generation / orchestrate.decide_task). 4) keep the no-LLM/no-network guard tests green.",
+  "snapshot_or_generated_files": "none that get checked in for this task; sample repos under samples/ (pyapp, cppapp, legacy_*, generated) are the fixtures. Do NOT commit .agents/, .kiro*, APIA/, old .tasks/*review*.md.",
+  "setup_instructions": "source /projects/sandbox/.venv/bin/activate (python3.9 + pytest + PyYAML; bandit/ruff/radon/pip-audit/flake8; cppcheck/clang-tidy; cmake/g++/ctest; Flask). Network OPEN.",
+  "environment_constraints": "Network OPEN. C++ e2e tests build GoogleTest live => always run pytest with timeout >= 600000 ms or it appears to hang at the 120s default. Model temperature is NOT settable; 'best' is enforced by deterministic thresholds + grounded findings, never a temperature. The per-iteration fix is a LIVE Copilot action - scripts never call a model; proof materializes fixes as scripted worked-examples while the DECISION/threshold/cap/best-so-far/failure-report machinery is genuinely executed and asserted.",
+  "contribution_requirements": "Keep APIA founding constraints: runs entirely on the user's Copilot session; NEVER calls a separate/external LLM; zero network/LLM calls in the off-model scripts; strictly local; semi-autonomous + human-gated (final apply and any stop-and-ask stay human-gated). Match the existing concise technical tone and schema/contract conventions. Keep Tier-0 copilot-instructions.md under ~6500 bytes (currently 6053).",
+  "key_patterns": "SINGLE shared gate function scan.apply_thresholds(findings, thresholds) returns {passed, fail_on_severity, failing_severities, failing_counts, reasons}. scan.make_finding(severity,category,file,line,rule,message,source_tool) builds the canonical finding. evalloop.evaluate(repo_path, adapter, options, state) is the decision driver using LoopState (persistent iteration counter) bounded by resolve_max_iterations; it already decides green/needs_fix/stop/needs_confirmation and builds build_failure_report(summary, eval_data). scaffold.decide_generation and scaffold.generation_gate already call scan.apply_thresholds + evalloop primitives. orchestrate.decide_task routes code/test -> evalloop.evaluate and generation -> scaffold.decide_generation, recording the verdict verbatim. Config is REPO-FIRST then package fallback. review.thresholds = {fail_on_severity: high, max_findings: {security: 0}}.",
+  "relevant_files": [
+    ".apia/scripts/evalloop.py (add the shared fused evaluate_quality_gated; extend build_failure_report to fold scanner findings; best-so-far tracking)",
+    ".apia/scripts/scan.py (REUSE apply_thresholds + make_finding; do not reimplement)",
+    ".apia/scripts/scaffold.py (decide_generation / generation_gate - delegate to the shared fused decision)",
+    ".apia/scripts/orchestrate.py (decide_task - picks up the fused decision via the shared functions it already calls)",
+    ".apia/scripts/verify.py (--iterate CLI path - wire the fused decision + optional scanner findings)",
+    ".apia/config.yml (reuse review.thresholds; add any iterate-to-best knobs under existing eval_data/review structures, keep existing keys intact)",
+    ".apia/scripts/tests/test_evalloop.py, test_scaffold.py, test_orchestrate.py, test_scan.py, test_e2e_loop.py (extend with fused-decision + parity + best-so-far + cap + config-tuning tests)",
+    "docs/ARCHITECTURE.md (new/extended Iterate-to-Best section)",
+    "USAGE.md (tuning 'best' thresholds, convergence/stop, VS 2022)",
+    "docs/PROOF.md (executed decision/cap/best-so-far vs worked-example fixes)",
+    "README.md",
+    ".github/prompts/apia-iterate.prompt.md (target green + thresholds; stop with best-so-far + specific ask)",
+    ".github/copilot-instructions.md (concise Tier-0 update, stay < ~6500 bytes)"
+  ],
+  "directory_structure": ".apia/scripts/ = off-model engines (evalloop, scan, scaffold, orchestrate, verify, evaldata, ingest) + tests/. .apia/adapters/ = per-stack YAML. .apia/config.yml = policy. .github/ = portable Copilot artifacts (copilot-instructions.md Tier-0, prompts/, agents/, skills). docs/ = ARCHITECTURE/USAGE/PROOF/PORTABILITY. samples/ = pyapp, cppapp, legacy_pyapp, legacy_cppapp, generated fixtures."
+}

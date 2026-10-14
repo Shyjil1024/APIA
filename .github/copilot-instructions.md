@@ -38,9 +38,13 @@ Converge on grounded eval data, not guesses. Runs on THIS session as a single Ti
    confirmation** first - the model must not both write the code and invent the test it
    grades by.
 3. **Generate the change**, then **run the deterministic verifier** (`verify.py --iterate
-   --emit-failure-report`: never another model); feed each failure back and fix. Re-run
-   until **green** OR the hard `max_iterations` cap in `.apia/config.yml`, then **STOP and
-   ask**. **Never silently apply a broken change; never loop forever.**
+   --emit-failure-report`, add `--findings <scan.json>` for the reviewer gate: never
+   another model); feed each failure (gate failures carry the exact scanner findings) back
+   and fix. The target is **green tests AND the configured `review.thresholds`** (iterate
+   to BEST, not merely green). Re-run until that OR the hard `max_iterations` cap in
+   `.apia/config.yml`, then **STOP and ask**, presenting the **best-so-far** attempt (not
+   the last) + a specific residual ask. **Never silently apply a broken/sub-threshold
+   change; never loop forever.**
 
 ## Review (off-model scanners, grounded findings)
 

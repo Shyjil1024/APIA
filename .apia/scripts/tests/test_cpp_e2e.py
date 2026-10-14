@@ -34,6 +34,7 @@ if SCRIPTS_DIR not in sys.path:
 import verify  # noqa: E402
 import evaldata  # noqa: E402
 import evalloop  # noqa: E402
+import scan  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPTS_DIR))
 CPPAPP = os.path.join(REPO_ROOT, "samples", "cppapp")
@@ -846,3 +847,91 @@ def test_e2e_cpp_full_iterate_to_green_with_committed_golden(tmp_path):
     assert decisions[-1]["status"] == "stop", decisions[-1]
     assert decisions[-1]["reason"] == "max_iterations_reached"
     assert cap_state.iteration == 2
+
+
+# ===========================================================================
+# PHASE 5 -- ITERATE-TO-BEST: EXECUTED fused-loop proof (C++).
+#
+# Drives the SHARED fused decision (evalloop.evaluate_quality_gated) with a REAL
+# C++ build+test verify on samples/cppapp (CMake + GoogleTest + CTest run for
+# real via the adapter's local commands -- NOT a precomputed cycle, NOT mocked)
+# fused with the Phase-2 reviewer gate (scan.apply_thresholds against worked-
+# example scanner findings). The verify + gate + decision + cap + best-so-far
+# machinery is GENUINELY EXECUTED on the C++ stack via the SAME stack-adapter
+# abstraction the Python proof uses. The per-iteration code FIX is a LIVE Copilot
+# action in real use; here a SCRIPTED change to the findings list stands in for
+# it (clearly marked). Guarded by shutil.which(cmake/ctest).
+# ===========================================================================
+
+
+def _cpp_finding(sev, cat="security"):
+    """A worked-example normalized C++ finding (scan.make_finding shape)."""
+    return scan.make_finding(sev, cat, "src/mathops.cpp", 1, "cppcheck-000",
+                             "worked-example finding", "worked-example")
+
+
+@_requires_toolchain
+def test_e2e_cpp_fused_loop_tests_green_but_gate_fails_then_fix_converges(tmp_path):
+    """EXECUTED (C++): the REAL CMake+GoogleTest suite is GREEN, but the reviewer
+    gate FAILS on a worked-example HIGH finding => needs_fix with the finding in
+    the structured failure report; then a SCRIPTED fix clears the findings so the
+    next iteration CONVERGES (green verify + gate passes)."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    adapter = verify.load_adapter(CPP_ADAPTER)
+    bar = {"fail_on_severity": "high", "max_findings": {"security": 0}}
+    bl = str(tmp_path / "bl.json")
+    state = evalloop.LoopState()
+
+    # --- Iteration 1: REAL green C++ verify, FAILING reviewer gate. ---
+    needs_fix = evalloop.evaluate_quality_gated(
+        repo, adapter,
+        {"adapter_path": CPP_ADAPTER, "layer1": False, "baseline_file": bl,
+         "findings": [_cpp_finding("high")], "thresholds": bar,
+         "max_iterations": 3},
+        state)
+    assert needs_fix["status"] == "needs_fix", needs_fix
+    report = needs_fix["failure_report"]
+    assert report["reviewer_gate"]["passed"] is False
+    assert report["scanner_findings"][0]["severity"] == "high"
+    assert state.iteration == 1
+
+    # --- SCRIPTED FIX (stands in for the LIVE Copilot fix): findings cleared. --
+    green = evalloop.evaluate_quality_gated(
+        repo, adapter,
+        {"adapter_path": CPP_ADAPTER, "layer1": False, "baseline_file": bl,
+         "findings": [], "thresholds": bar, "max_iterations": 3},
+        state)
+    assert green["status"] == "green", green
+    assert green["reviewer_gate"]["passed"] is True
+    assert state.iteration == 2
+
+
+@_requires_toolchain
+def test_e2e_cpp_fused_loop_never_converges_stops_with_best_so_far(tmp_path):
+    """EXECUTED (C++): a never-clearing reviewer gate over a REAL green C++ verify
+    hits the hard cap and STOPS with best-so-far + a residual summary -- never
+    looping forever, never silently accepting a sub-threshold result."""
+    repo = _copy_cpp_sources(CPPAPP, str(tmp_path / "cppapp"))
+    adapter = verify.load_adapter(CPP_ADAPTER)
+    bar = {"fail_on_severity": "high", "max_findings": {"security": 0}}
+    bl = str(tmp_path / "bl.json")
+    state = evalloop.LoopState()
+    decisions = []
+    for _ in range(10):  # far more than the cap of 2; must self-limit
+        d = evalloop.evaluate_quality_gated(
+            repo, adapter,
+            {"adapter_path": CPP_ADAPTER, "layer1": False, "baseline_file": bl,
+             "findings": [_cpp_finding("high")], "thresholds": bar,
+             "max_iterations": 2},
+            state)
+        decisions.append(d)
+        if d["status"] == "stop":
+            break
+    final = decisions[-1]
+    assert final["status"] == "stop"
+    assert final["reason"] == "max_iterations_reached"
+    assert state.iteration == 2  # never exceeded the hard cap
+    assert final["best_so_far"] is not None
+    assert "best attempt was iteration" in final["ask"]
+    # Residual summary groups by SEVERITY (the high finding), not category.
+    assert "high=1" in evalloop._residual_summary(final["best_so_far"])

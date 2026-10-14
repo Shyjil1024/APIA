@@ -1075,18 +1075,45 @@ def _format_iterate_human(decision, emit_report=False):
         if advisory.get("warning"):
             lines.append("  advisory: {}".format(advisory["warning"]))
 
+    # Reviewer-gate dimension (iterate-to-best): when the gate was in play, show
+    # whether the configured review.thresholds passed and why not. ``reviewer_gate``
+    # is None when no --findings were supplied (gate not in play).
+    gate = decision.get("reviewer_gate")
+    if gate is not None:
+        if gate.get("passed"):
+            lines.append("  reviewer gate: PASSED (meets review.thresholds)")
+        else:
+            lines.append("  reviewer gate: FAILED -- {}".format(
+                "; ".join(gate.get("reasons") or ["thresholds breached"])))
+    else:
+        lines.append("  reviewer gate: not in play (no --findings; tests-green "
+                     "mode)")
+
+    # Best-so-far: the BEST attempt reached across iterations (not necessarily
+    # the last), so a stop presents the best, not the final, attempt.
+    best = decision.get("best_so_far")
+    if best:
+        score = best.get("score") or {}
+        lines.append("  best so far: iteration {} (residual score {}, {} "
+                     "finding(s), {} failing phase(s))".format(
+                         best.get("iteration"), score.get("score"),
+                         score.get("finding_count"),
+                         score.get("failing_phase_count")))
+
     if status == "green":
-        lines.append("  => GREEN (cycle passed; the loop stops immediately)")
+        lines.append("  => GREEN (tests pass AND reviewer gate meets the "
+                     "configured thresholds; the loop stops -- best reached)")
     elif status == "needs_confirmation":
         lines.append("  => NEEDS CONFIRMATION (anti-circularity gate)")
         lines.append("  ask: {}".format(decision.get("ask")))
     elif status == "stop":
-        lines.append("  => STOP ({}) -- the loop will NOT auto-apply a broken "
-                     "change".format(decision.get("reason")))
+        lines.append("  => STOP ({}) -- the loop will NOT auto-apply a "
+                     "sub-threshold change".format(decision.get("reason")))
         lines.append("  ask: {}".format(decision.get("ask")))
     else:  # needs_fix
-        lines.append("  => NEEDS FIX (hand the structured failure to the live "
-                     "model, then re-run the next cycle)")
+        lines.append("  => NEEDS FIX (hand the structured failure -- including "
+                     "any reviewer findings -- to the live model, then re-run "
+                     "the next cycle)")
 
     report = decision.get("failure_report")
     if emit_report:
@@ -1190,6 +1217,18 @@ def main(argv=None):
         help="With --iterate, print the STRUCTURED, JSON-serializable failure "
              "report a model would consume (or GREEN) plus the stop/ask decision.",
     )
+    parser.add_argument(
+        "--findings",
+        dest="findings",
+        default=None,
+        help="With --iterate: path to a JSON file of NORMALIZED scanner findings "
+             "(the scan.py --json 'findings' list, or the whole scan report) that "
+             "turns on the REVIEWER GATE so the loop targets green tests AND the "
+             "configured review.thresholds (iterate-to-best). When omitted the "
+             "fused decision degrades to the tests-green behavior (backward "
+             "compatible). The findings come from a LIVE scan; this path only "
+             "APPLIES the thresholds -- it never scans or calls a model.",
+    )
     args = parser.parse_args(argv)
 
     # --doctor: shared offline preflight. A repo_path is OPTIONAL but, when a
@@ -1252,6 +1291,24 @@ def main(argv=None):
             "build_only": args.build_only,
             "max_iterations": args.max_iterations,
         }
+        # --findings turns on the REVIEWER GATE (iterate-to-best): load the
+        # NORMALIZED scanner findings produced by a LIVE scan (scan.py --json)
+        # and hand them to the fused decision. Accept either the raw findings
+        # list or a full scan report (whose ``findings`` key holds the list).
+        # When absent, the gate is not in play and behavior matches today.
+        if args.findings is not None:
+            try:
+                with open(args.findings, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+            except (OSError, ValueError) as exc:
+                parser.error("could not read --findings {!r}: {}".format(
+                    args.findings, exc))
+            if isinstance(loaded, dict):
+                loaded = loaded.get("findings") or []
+            if not isinstance(loaded, list):
+                parser.error("--findings must be a JSON list of normalized "
+                             "findings or a scan report with a 'findings' list")
+            iterate_options["findings"] = loaded
         try:
             decision = evalloop.evaluate(args.repo_path, adapter, iterate_options)
         except StubAdapterError as exc:
