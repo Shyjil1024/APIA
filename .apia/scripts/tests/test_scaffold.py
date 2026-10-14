@@ -552,3 +552,18 @@ def test_decide_generation_gate_pass_parity_with_evaluate_quality_gated():
     # Both carry the SAME passing reviewer gate block.
     assert scaffold_dec["gate"] == evalloop_dec["reviewer_gate"]
     assert scaffold_dec["gate"]["passed"] is True
+
+
+# --- Phase-6a LOCAL plugin wiring (additive) ---------------------------------
+
+def test_resolve_supported_shapes_includes_plugin_shape(tmp_path):
+    """A LOCAL shape plugin id is appended to the supported-shapes list."""
+    repo = tmp_path / "repo"
+    (repo / ".apia" / "plugins" / "shapes").mkdir(parents=True)
+    (repo / ".apia" / "plugins" / "shapes" / "s.yml").write_text(
+        "shape: wasm_module\nstack: cpp\n", encoding="utf-8")
+    shapes = scaffold.resolve_supported_shapes(str(repo))
+    assert "wasm_module" in shapes
+    # Built-ins remain (additive, not replacing).
+    assert "python_cli" in shapes
+    assert "cpp_console" in shapes

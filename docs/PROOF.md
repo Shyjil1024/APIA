@@ -818,6 +818,166 @@ re-decide. A passing run of this file **is** the durable guarantee for the orche
 
 ---
 
+## LOCAL sharing proof (Phase 6a knowledge packs / profiles / plugins / manifest)
+
+Phase 6a is **fully deterministic and off-model**, so unlike the per-task LLM steps
+elsewhere in this document there is **no live-model dependency** for any of these
+mechanics: every capability below is **EXECUTED FOR REAL in this sandbox** by the
+off-model engine `.apia/scripts/share.py` (and asserted as pytest in
+`.apia/scripts/tests/test_share.py`). `share.py` makes **zero LLM and zero network
+calls** -- a static forbidden-substring guard in `test_share.py` enforces it, mirroring
+`test_scan` / `test_orchestrate` -- and it only reads/writes LOCAL files already committed
+to (or destined for) the git repo. Sharing is `git commit` + `git pull`; nothing leaves
+the machine.
+
+### Knowledge-pack round-trip (artifacts + project-facts match, executed)
+
+Ingest a sample into a source knowledge dir, export a versioned pack, and import it into a
+**fresh** dir, then compare:
+
+```bash
+.venv/bin/python .apia/scripts/ingest.py samples/pyapp --knowledge-dir /tmp/src
+.venv/bin/python .apia/scripts/share.py --export-pack --repo . --knowledge-dir /tmp/src --out /tmp/pack.json
+.venv/bin/python .apia/scripts/share.py --import-pack --pack /tmp/pack.json --knowledge-dir /tmp/dest --json
+```
+
+```
+Exported 8 artifact(s) (schema_version 1) -> /tmp/pack.json
+# import result:
+{ "schema_version": "1", "unknown_version": false,
+  "imported": ["architecture.md","dependencies.md","pipelines.md","project-facts.md",
+               "project-map.md","stack.md","test-inventory.md","workflows.md"],
+  "conflicts": [], "skipped_local": [], "forced": [], "index_written": true }
+```
+
+All **8 `ingest.ARTIFACTS`** (incl. `project-facts.md`) round-trip, and a byte comparison
+of the imported `project-facts.md` against the pack content returns **`True`** (the
+anti-hallucination project memory survives the round-trip intact). The same round-trip is
+exercised for the **C++** knowledge dir (ingest `samples/cppapp` -> export -> import) with
+the identical artifact set.
+
+### Safe no-clobber merge + opt-in `--force` (executed)
+
+A locally-corrected artifact is a **local correction** and must never be silently
+clobbered. After editing `project-facts.md` in the target dir and re-importing the same
+pack:
+
+```
+# default import (NO --force): divergent local copy kept + reported
+{ "conflicts": ["project-facts.md"], "skipped_local": ["project-facts.md"], "forced": [] }
+# local file after import:  "LOCAL CORRECTION"   (unchanged -- kept)
+
+# explicit opt-in override:
+.venv/bin/python .apia/scripts/share.py --import-pack --pack /tmp/pack.json --knowledge-dir /tmp/dest --force --json
+{ "forced": ["project-facts.md"], "conflicts": [] }
+# local file after --force:  "# Project facts"   (now the pack copy)
+```
+
+The divergent local copy is **kept and surfaced** by default; `--force` is the only path
+that overwrites it, and it is **recorded in `forced`**.
+
+### Version-field handling (executed)
+
+A pack whose `schema_version` is bumped to an unknown/newer value (`"999"`) is **reported,
+not applied**:
+
+```
+{ "unknown_version": true, "imported": [] }
+```
+
+A newer pack layout therefore cannot corrupt an older install.
+
+### Org/team profile apply + precedence (LOCAL wins, executed)
+
+Applying the shipped example profile over the local config:
+
+```bash
+.venv/bin/python .apia/scripts/share.py --apply-profile --profile .apia/profiles/example-team.yml --repo . --json
+```
+
+```
+# effective_config / provenance (excerpt):
+confidence_threshold: 0.75   -> provenance "local"    # local 0.75 WINS over profile 0.8
+review.thresholds.fail_on_severity: high              # local "high" WINS over profile "medium"
+review.thresholds.max_findings.quality: 25            # profile FILLS IN (local did not set it)
+```
+
+The profile is **deep-merged UNDER** the local config: a key the local config sets WINS,
+a key it leaves unset is FILLED IN from the profile, and the provenance map records which
+is which. The profile uses only existing `config.yml` keys; no new top-level concept is
+introduced.
+
+### LOCAL plugin discovery / load (adapter + scanner + shape, executed)
+
+The committed example plugins under `.apia/plugins/` are discovered REPO-FIRST and the
+engines consume them:
+
+```bash
+.venv/bin/python .apia/scripts/share.py --plugins --repo . --json
+```
+
+```
+adapters: [{ name: "lua",      path: "./.apia/plugins/adapters/example-lua.yml" }]
+scanners: [{ stack: "python", category: "perf", name: "radon-mi",
+             path: "./.apia/plugins/scanners/example-python-perf.yml" }]
+shapes:   [{ shape: "cpp_plugin", stack: "cpp",
+             path: "./.apia/plugins/shapes/example-cpp-plugin.yml" }]
+errors:   []
+```
+
+The engines actually **use** these: `scaffold.resolve_supported_shapes('.')` includes
+`cpp_plugin`; `scan` picks up the `radon-mi` **perf** scanner for the Python stack; and
+`scan`/`verify` resolve the `lua` adapter by name to
+`./.apia/plugins/adapters/example-lua.yml`.
+
+### Malformed-plugin graceful-failure (executed)
+
+A malformed plugin never crashes the loader -- it is captured in `errors` and skipped:
+
+```
+# a broken-YAML adapter + a scanner missing its required `stack`:
+errors: [ ("adapter", "adapter plugin is empty or not a mapping"),
+          ("scanner", "scanner plugin missing required 'stack' key") ]
+```
+
+The loader **never raises** and **never downloads anything**; an absent plugin dir changes
+nothing (plugins are strictly additive).
+
+### Capability manifest (complete-vs-stub + scanners + shapes + plugins + versions, executed)
+
+```bash
+.venv/bin/python .apia/scripts/share.py --manifest --repo . --json
+```
+
+```
+adapters:  python=complete, cpp=complete, csharp=stub, groovy=stub, lua=stub (plugin)
+scanners:  bandit, pip-audit, ruff, flake8, radon, radon-mi(plugin), clang-tidy = present; cppcheck = absent (reported, not faked)
+supported_shapes: python_cli, python_library, python_web_api, cpp_console, cpp_library, gui, embedded, driver, cpp_plugin
+plugins:   adapters[lua], scanners[radon-mi], shapes[cpp_plugin], errors[]
+versions:  apia_version "6a", schema_version "1"
+```
+
+Both the **Python** and **C++** adapters report **complete** (each carries a real
+`test_command` + `scanners:` section); the **csharp/groovy** stubs and the example **lua**
+plugin adapter report **stub**; the plugin **scanner** (`radon-mi`) and plugin **shape**
+(`cpp_plugin`) appear in the enumerations; and a missing scanner (`cppcheck` here) is
+**reported absent, never fabricated**. `--doctor` reuses `ingest.doctor()` and prints the
+same offline toolchain preflight the other engines use.
+
+### CI-asserted
+
+`.apia/scripts/tests/test_share.py` encodes all of the above as pytest so CI asserts it on
+every run: the pack round-trip (artifacts + `project-facts.md` match), the safe-merge
+no-clobber and the `--force` override, the unknown-version report, the profile
+apply + local-wins precedence with provenance, plugin discovery/load for an adapter + a
+scanner + a shape and the malformed-plugin graceful-failure, the manifest content
+(complete-vs-stub + scanners + shapes + plugins + versions), and the no-LLM/no-network
+static guard. `test_ingest` / `test_scan` / `test_scaffold` / `test_verify` additionally
+assert the engines **discover and use** a local plugin. A passing run of these files **is**
+the durable guarantee for the Phase-6a sharing layer.
+
+---
+
 ## One command: the automated end-to-end test
 
 The entire proof is also encoded as a pytest so CI can assert it:

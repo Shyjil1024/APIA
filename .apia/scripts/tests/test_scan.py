@@ -698,3 +698,32 @@ def test_scan_makes_no_network_or_llm_calls():
     ]
     for token in forbidden:
         assert token not in src, "scan.py must not reference '{}'".format(token)
+
+
+# --- Phase-6a LOCAL plugin wiring (additive) ---------------------------------
+
+def test_scan_resolves_plugin_adapter(tmp_path):
+    """scan._adapter_path_for_stack finds a team-provided LOCAL adapter plugin."""
+    repo = tmp_path / "repo"
+    (repo / ".apia" / "plugins" / "adapters").mkdir(parents=True)
+    (repo / ".apia" / "plugins" / "adapters" / "zig.yml").write_text(
+        "name: zig\ntest_command: zig test\nextensions:\n  - .zig\n",
+        encoding="utf-8")
+    path = scan._adapter_path_for_stack("zig", str(repo))
+    assert path is not None and path.endswith("zig.yml")
+    # No plugin for an undeclared stack -> None (existing behavior unchanged).
+    assert scan._adapter_path_for_stack("nope", str(repo)) is None
+
+
+def test_scan_enumerates_plugin_scanner(tmp_path):
+    """scan() folds a LOCAL plugin scanner into the stack's enumeration."""
+    repo = tmp_path / "repo"
+    (repo / ".apia" / "plugins" / "scanners").mkdir(parents=True)
+    (repo / ".apia" / "plugins" / "scanners" / "extra.yml").write_text(
+        "stack: python\ncategory: quality\nscanner:\n"
+        "  tool: extraqual\n  command: python -m flake8 .\n  format: flake8\n",
+        encoding="utf-8")
+    (repo / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    adapter = scan.load_adapter(PY_ADAPTER)
+    report = scan.scan(str(repo), adapter, {"category": "quality"})
+    assert "extraqual" in {m["tool"] for m in report["scanners"]}

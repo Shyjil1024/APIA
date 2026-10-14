@@ -81,6 +81,17 @@ try:
 except ImportError:
     ingest = None
 
+# share.py (Phase-6a) ships the LOCAL plugin loader. scan.py consults it so a
+# team-provided LOCAL adapter plugin (.apia/plugins/adapters/) is resolvable and
+# a plugin scanner (.apia/plugins/scanners/) is picked up during enumeration.
+# The import is OPTIONAL and ADDITIVE: when share.py is absent or no plugins are
+# present, adapter resolution + scanner enumeration behave exactly as before.
+# share.py is a LOCAL stdlib-only module (no network/LLM).
+try:
+    import share  # noqa: E402  (reused for plugin_adapter_path/plugin_scanner_defs)
+except ImportError:
+    share = None
+
 
 # --- Canonical vocabulary ---------------------------------------------------
 #
@@ -826,6 +837,17 @@ def _adapter_path_for_stack(stack_name, repo_path=None):
             adapter_rel = entry.get("adapter")
             if adapter_rel:
                 return os.path.normpath(os.path.join(apia_dir, adapter_rel))
+    # ADDITIVE plugin wiring: a LOCAL adapter plugin may supply a stack that
+    # config.yml does not declare (or override one that does). Only consulted
+    # after the config stacks, so existing resolution is unchanged when no plugin
+    # provides the stack.
+    if share is not None:
+        try:
+            plugin_path = share.plugin_adapter_path(stack_name, repo_path)
+            if plugin_path:
+                return plugin_path
+        except Exception:
+            pass
     return None
 
 
@@ -988,7 +1010,18 @@ def scan(repo, adapter, options=None):
     category = options.get("category", "all") or "all"
 
     scanner_defs = list(_iter_scanner_defs(adapter, category))
-    if not adapter.get("scanners"):
+    # ADDITIVE plugin wiring: fold in any LOCAL plugin scanner that EXTENDS this
+    # adapter's scanners: contract (matched by the adapter's stack name). No
+    # plugin -> the enumeration is exactly the adapter's own scanners.
+    plugin_scanner_defs = []
+    if share is not None and adapter.get("name"):
+        try:
+            plugin_scanner_defs = share.plugin_scanner_defs(
+                adapter.get("name"), repo_path, category)
+        except Exception:
+            plugin_scanner_defs = []
+    scanner_defs = list(scanner_defs) + list(plugin_scanner_defs)
+    if not adapter.get("scanners") and not plugin_scanner_defs:
         raise StubAdapterError(
             "adapter {!r} declares no 'scanners:' section. scan.py refuses to "
             "report a clean bill of health for an adapter with nothing to run. "
@@ -1017,6 +1050,13 @@ def scan(repo, adapter, options=None):
     thresholds = resolve_thresholds(review_config, options)
     gate = apply_thresholds(all_findings, thresholds)
 
+    # NOTE (Phase-6a): the `tools` block reflects the ADAPTER-DECLARED scanners
+    # only -- it is the stable, doctor-style presence advisory for the adapter
+    # contract itself. A folded-in LOCAL plugin scanner intentionally does NOT
+    # appear here; it is reported in the per-run `scanners` metas above (and in
+    # the capability manifest's scanner union via share.build_manifest). Keeping
+    # `tools` adapter-only means the adapter's advertised toolset does not shift
+    # with whatever plugins a given repo happens to ship.
     tools_report = scanner_tools_report(adapter)
 
     return {

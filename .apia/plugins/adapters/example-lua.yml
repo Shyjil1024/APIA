@@ -1,0 +1,30 @@
+# APIA EXAMPLE adapter plugin (Phase-6a LOCAL plugin).
+#
+# A team-provided LOCAL stack adapter demonstrating the plugin mechanism. It is
+# a plain YAML consistent with the .apia/adapters/README.md adapter schema and
+# issues NO network/LLM calls (it is only declarative data read by the off-model
+# engines). The `name` is the stack id the engines resolve.
+#
+# This EXAMPLE adds a minimal `lua` stack so ingest detection (when a repo has
+# .lua sources / a rockspec), scan adapter resolution, and verify adapter
+# resolution all discover a team adapter. Replace or remove for your own stack.
+name: lua
+primary: false
+language: Lua
+test_command: "busted"
+test_discovery_glob:
+  - "**/*_spec.lua"
+  - "spec/**/*.lua"
+no_tests_detection:
+  description: "No files match test_discovery_glob (busted reports 0 tests)."
+  collect_command: "busted --list"
+  zero_tests_signal: "0 successes"
+characterization_test_template: null
+build_command: null
+lint_command: "luacheck ."
+manifests:
+  - "*.rockspec"
+extensions:
+  - ".lua"
+frameworks:
+  - busted

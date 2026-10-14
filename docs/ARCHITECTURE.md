@@ -576,11 +576,12 @@ does the mechanical work for free), and stays **strictly local** (no auto-push/P
 ### Deferred (clearly labeled)
 
 The following remain **DEFERRED** (see section 7): the **C#/Groovy** adapters to parity;
-concrete **MCP data sources**; auto-push/PR/MR/CI integration; the VS Code **marketplace
-extension**; and cross-team/org knowledge & capability sharing + plugins.
+concrete **MCP data sources**; auto-push/PR/MR/CI integration.
 (`apia-orchestrator` task-graph autonomy is now **DELIVERED** -- see section 3f; the full
 **iterate-to-best** threshold fusion is now **DELIVERED** -- see "Iterate-to-Best (Phase 5)"
-in section 3b.)
+in section 3b; **LOCAL git-based knowledge & capability sharing + plugins** is now
+**DELIVERED** -- see section 3g, with external/hosted sharing **intentionally out of scope**
+per section 7.)
 
 ---
 
@@ -706,10 +707,92 @@ stays **strictly local**.
 
 The following remain **DEFERRED** (see section 7): the **C#/Groovy** adapters to parity;
 concrete **MCP data sources**; **auto-push/PR/MR/CI/packaging/signing** (APIA stays
-strictly local; the user pushes manually); the VS Code **marketplace extension**; and
-**cross-team/org/external knowledge & capability sharing + plugins**. (The full
-**iterate-to-best** threshold fusion is now **DELIVERED** -- see "Iterate-to-Best
-(Phase 5)" in section 3b.)
+strictly local; the user pushes manually). (The full **iterate-to-best** threshold fusion
+is now **DELIVERED** -- see "Iterate-to-Best (Phase 5)" in section 3b; **LOCAL, git-based
+knowledge & capability sharing** is now **DELIVERED** in Phase 6a -- see section 3g.
+External/hosted/cross-org sharing is **intentionally out of scope**, not deferred -- see
+section 7.)
+
+---
+
+## 3g. LOCAL knowledge & capability sharing (Phase 6a)
+
+APIA teams already share one thing through the git repo: the committed
+`.apia/knowledge/` base. Phase 6a generalizes that single idea -- **sharing is a
+committed file, pulled like any other** -- into four capabilities, all driven by the
+off-model engine `.apia/scripts/share.py` and all **strictly LOCAL**. There is **no
+server, no network service, no auth/multi-tenancy, no download, and nothing leaves the
+machine**: `share.py` makes **zero LLM and zero network calls** (a static guard test
+enforces it, exactly like `scan.py` / `orchestrate.py`). It never reasons; it does only
+mechanical, reproducible work and **composes the existing engines** (`ingest`, `scan`,
+`scaffold`) rather than duplicating them.
+
+CLI (one mutually-exclusive action per run, plus shared options
+`--repo` / `--knowledge-dir` / `--out` / `--pack` / `--profile` / `--force` / `--json`):
+
+```bash
+share.py --export-pack --repo . --knowledge-dir <dir> --out pack.json
+share.py --import-pack --pack pack.json --knowledge-dir <dir> [--force]
+share.py --apply-profile --profile <profile.yml> --repo .
+share.py --manifest  --repo . [--json]
+share.py --plugins   --repo . [--json]
+share.py --doctor    --repo .
+```
+
+### (1) Versioned knowledge packs (safe no-clobber merge)
+
+`export_pack()` reads the **8 committed knowledge artifacts** (`ingest.ARTIFACTS`, incl.
+`project-facts.md`) plus the `.index.json` index and emits one portable JSON pack with a
+top-level `schema_version` ("1"), the source repo, a timestamp, and per-artifact
+`{content, hash}`. `import_pack()` does a **SAFE no-clobber merge** into a target
+knowledge dir: a missing or byte-identical artifact is written freely; a **divergent
+local artifact is treated as a local correction** -- it is **KEPT**, recorded under
+`conflicts` / `skipped_local`, and surfaced, **never silently overwritten**. This is the
+same respect for user-corrected knowledge the rest of APIA applies. An explicit opt-in
+`--force` overrides a divergent copy (recorded under `forced`). An **unknown/newer**
+`schema_version` is **REPORTED** (`unknown_version: true`) and **not applied** -- a newer
+pack layout can never corrupt an older install.
+
+### (2) Shared org/team profiles (LOCAL overrides win)
+
+A committable profile (`.apia/profile.yml`; an example ships as
+`.apia/profiles/example-team.yml`) uses the **SAME keys as `.apia/config.yml`** -- no new
+top-level concepts are invented. `apply_profile()` **deep-merges the profile UNDER the
+local config**, so a key the local config sets ALWAYS **wins**, and a key the local config
+leaves unset is **filled in** from the profile. The result carries a **provenance map**
+(dotted key -> `local` | `profile`) so the manifest/report shows exactly which keys came
+from where. Precedence resolution is **REPO-FIRST** (the consuming repo's config, then the
+package fallback), the same resolution `scaffold._load_config` uses.
+
+### (3) LOCAL plugins / extensions (committed files, additive)
+
+Team-provided plugins live under a committable `.apia/plugins/{adapters,scanners,shapes}/`
+dir (see `.apia/plugins/README.md` and the plugin contract in `.apia/adapters/README.md`).
+`discover_plugins()` / `load_plugins()` scan the dir **REPO-FIRST then package**; the
+existing engines **consult** the loader -- `ingest` (stack detection), `scan` (adapter +
+scanner enumeration), `scaffold` (supported shapes), and `verify` (adapter path
+resolution). Plugins are **strictly additive**: an absent dir changes nothing. Discovery
+reads **only committed local files** -- **no download, no fetch, no marketplace, no
+network**. A **malformed** plugin (bad YAML / missing required keys) is captured in the
+loader's `errors` list and **skipped**; the loader **never raises**. Committed `example-*`
+plugins (an `example-lua` adapter, an `example-python-perf` radon-mi scanner, an
+`example-cpp-plugin` shape) make the mechanism demonstrable and testable.
+
+### (4) Capability manifest (reuses doctor + detection)
+
+`build_manifest()` emits one machine-readable description of the install, **REUSING**
+`ingest.doctor()` plus the adapter/scanner/shape detection: every adapter marked
+**complete-vs-stub** (python complete, cpp complete, csharp stub, groovy stub, plus any
+plugin adapter), the available **scanners**, the **supported_shapes** (incl. a plugin
+shape such as `cpp_plugin`), the **loaded plugins** (incl. any `errors`), the applied
+profile's **provenance**, and **versions** (`apia_version: "6a"`, `schema_version: "1"`).
+It is the single query a human or an agent runs to see what *this* checkout can do.
+
+All four capabilities ride the user's Copilot session for any reasoning (the engine itself
+reasons about nothing), stay token-efficient, and stay **strictly local**: sharing is a
+`git commit` + `git pull` away, exactly like the knowledge base. See `docs/PROOF.md` for
+the executed round-trip / precedence / plugin-load / manifest evidence and `USAGE.md` for
+the command recipes.
 
 ---
 
@@ -759,7 +842,10 @@ strictly local; the user pushes manually); the VS Code **marketplace extension**
       scan.py                        #   Reviewer: off-model scanners -> canonical findings + composable gate
       scaffold.py                    #   Phase 3: shape detect + skeleton emit + build/run/test normalize + gate
       orchestrate.py                 #   Phase 4: task-graph build/validate + run-state/resume + global stop + audit
+      share.py                       #   Phase 6a: LOCAL knowledge packs / org-team profiles / plugin loader / capability manifest
     adapters/                        # per-stack build/test + scanner + generate maps (py + cpp complete; csharp/groovy stubs)
+    plugins/                         # Phase 6a: committed LOCAL plugins (adapters/scanners/shapes); additive, no download
+    profiles/                        # Phase 6a: example committable org/team profile (same keys as config.yml)
   samples/
     generated/                       # committed generated proof projects (sources only; build/ + out/ gitignored)
       python_cli/ python_library/ python_web_api/ cpp_console/ cpp_library/   # fully verified
@@ -879,12 +965,24 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   (both under existing config structures). "best" = meets the configured deterministic
   thresholds OR the closest bounded attempt with an honest residual report, **not** provably
   optimal code. See "Iterate-to-Best (Phase 5)" in section 3b and `docs/PROOF.md`.
-- **DEFERRED - auto-push / PR / MR / CI integration** and VS Code **marketplace extension**
-  packaging (APIA stays strictly local; the user pushes manually).
-- **DEFERRED - Cross-team / org knowledge & capability sharing + plugins** (see Phase 4).
+- **DELIVERED (Phase 6a) - LOCAL, git-based knowledge & capability sharing**: four off-model
+  capabilities in `.apia/scripts/share.py` (versioned **knowledge packs** with a safe no-clobber
+  merge; shared **org/team profiles** layered under `config.yml` with LOCAL-overrides-win precedence;
+  a **local plugin/extension** contract for adapters/scanners/shapes as committed files, additive and
+  download-free; a **capability manifest** reusing `ingest.doctor()` + detection). Sharing is purely
+  **via the git repo** -- committed files, pulled like `.apia/knowledge/` -- with no server, no
+  network, and nothing leaving the machine. See section 3g and `docs/PROOF.md`.
+- **DEFERRED - auto-push / PR / MR / CI / packaging / signing integration** (APIA stays strictly
+  local; the user pushes manually).
 - **DEFERRED** - an **optional, opt-in self-hosted second-opinion reviewer** (off by default).
   Phase 1/2 ship **no** second/external/hosted LLM verifier (see section 3c): the verifier stays
   deterministic tooling and the loop rides only the user's Copilot session.
+- **OUT OF SCOPE (intentionally, not deferred) - external / hosted / cross-org sharing**: a hosted
+  knowledge-base **service**, an **MCP server exposing APIA** to other agents, **cross-org / external
+  APIs**, **collaborative-workspace** services, and **marketplace distribution** of plugins are a
+  **separate product** with its own security, hosting, and governance model. APIA's roadmap **ends
+  cleanly at LOCAL git-based sharing** (Phase 6a); these hosted/external directions are deliberately
+  not an APIA deliverable.
 
 ### Phase 3 - Validation gates (high level)
 
@@ -892,12 +990,31 @@ Phase 1 is decomposed into concrete tasks under `.tasks/` (see `docs/PHASE-1-TAS
   before APPLY: SAST/secret-scan, coverage/quality thresholds, test-adequacy checks. Each gate is a
   skill/agent with scoped tools; failures route back to CLARIFY/MODIFY.
 
-### Phase 4 - Knowledge & capability sharing (high level)
+### Phase 6a - LOCAL knowledge & capability sharing (DELIVERED)
 
-- **Securely share knowledge/capabilities across teams, repos, orgs, and external systems** via
-  APIs, plugins, agents, or collaborative workspaces: org-level custom agents/instructions, a shared
-  knowledge-base service, an MCP server exposing APIA capabilities to other agents, and plugin
-  packaging for marketplace distribution. Security/permissioning is a core concern here.
+- **DELIVERED.** Teams share knowledge and capabilities **LOCALLY, through the git repo** -- the
+  same way `.apia/knowledge/` is already shared. The off-model `.apia/scripts/share.py` engine
+  provides four committed-file capabilities: versioned **knowledge packs** (safe no-clobber merge +
+  opt-in `--force` + version-field handling), shared **org/team profiles** (same `config.yml` keys,
+  deep-merged UNDER local config so LOCAL overrides win, with a provenance map), a **local
+  plugin/extension** contract for adapters/scanners/shapes (committed files, REPO-FIRST discovery,
+  additive, malformed-plugin graceful-failure, **no download / no marketplace / no network**), and a
+  **capability manifest** (reusing `ingest.doctor()` + adapter/scanner/shape detection). See section
+  3g for the design and `docs/PROOF.md` for the executed evidence.
+
+### Out of scope (intentionally - a separate product, NOT a deferred APIA phase)
+
+- **External / hosted / cross-org sharing is deliberately NOT on APIA's roadmap.** A hosted
+  shared-knowledge **service**, an **MCP server that exposes APIA** to other agents, **cross-org /
+  external sharing APIs**, **collaborative-workspace** services, and **marketplace distribution** of
+  plugins each require their own **security, hosting, auth/multi-tenancy, and governance** model that
+  is fundamentally at odds with APIA's founding constraint of being strictly local (no server, no
+  network, nothing leaves the machine). They belong to a **separate product**, not to APIA. APIA's
+  roadmap **ends at LOCAL git-based sharing (Phase 6a)**; this is an explicit scope boundary, not a
+  "coming later" deferral.
+  (The legitimately-deferred items remain as labeled above: C#/Groovy adapter parity, concrete MCP
+  **data** sources, auto-push/PR/MR/CI/packaging/signing, and the optional opt-in self-hosted
+  second-opinion reviewer.)
 
 ---
 

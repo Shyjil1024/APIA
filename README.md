@@ -76,6 +76,16 @@ waits for you.
   **VS 2022 as a single agent** via `/apia-run`. It is **minimal interaction, not zero
   interaction** -- the human still approves at the batched checkpoints and the final apply.
   See `docs/ARCHITECTURE.md` section 3f and `docs/PROOF.md`.
+- **LOCAL knowledge & capability sharing (git-based).** Teams share through the git repo,
+  exactly like `.apia/knowledge/`. An off-model engine (`.apia/scripts/share.py`) provides
+  versioned **knowledge packs** (safe no-clobber merge + opt-in `--force`), shared
+  **org/team profiles** (same `config.yml` keys, LOCAL overrides win), a **local
+  plugin/extension** contract for adapters/scanners/shapes (committed files, additive,
+  **no download/marketplace/network**), and a **capability manifest** (reusing the doctor +
+  detection). It makes **zero LLM/network calls** and runs on **VS 2022 as a single agent**
+  via `/apia-share`. External/hosted/cross-org sharing is **intentionally out of scope**
+  (a separate product with its own security/hosting/governance model), **not** a deferred
+  phase. See `docs/ARCHITECTURE.md` section 3g and `docs/PROOF.md`.
 - **Portable.** Degrades gracefully by host capability (Tier 0/1/2). See
   `docs/PORTABILITY.md`.
 
@@ -95,8 +105,10 @@ and per-stack adapters live under `.apia/`:
   knowledge/                 # cached, committed project knowledge base (shared with the team)
   runs/                      # committed resumable run-state + audit log (orchestrator)
   config.yml                 # token budget, confidence threshold, stacks, knowledge_dir
-  scripts/                   # off-model preprocessing (indexing, test discovery)
+  scripts/                   # off-model preprocessing (indexing, test discovery, sharing)
   adapters/                  # per-stack build/test command maps
+  plugins/                   # LOCAL team plugins (adapters/scanners/shapes); committed, additive
+  profiles/                  # example committable org/team profile (same keys as config.yml)
 ```
 
 The `.apia/knowledge/` and `.apia/runs/` directories are **committed on purpose** so the
@@ -108,6 +120,18 @@ sessions and windows.
 Python, C++, C#, and Groovy are first-class. **Python and C++ are supported
 today** (C++ via CMake + MSBuild, with GoogleTest/Catch2/CTest/VSTest); C# and
 Groovy ship as adapter stubs and reach parity in Phase 2.
+
+## Roadmap status
+
+APIA's roadmap **ends at LOCAL, git-based knowledge & capability sharing** (delivered: the
+reviewer, greenfield generation, the orchestrator, iterate-to-best, and now the Phase-6a
+sharing layer). The remaining genuinely-deferred items are C#/Groovy adapter parity,
+concrete MCP **data** sources, auto-push/PR/MR/CI/packaging/signing, and an optional opt-in
+self-hosted second-opinion reviewer. **External / hosted / cross-org sharing** (a hosted
+knowledge service, an MCP server exposing APIA, cross-org APIs, collaborative workspaces,
+marketplace distribution) is **intentionally out of scope** -- a separate product with its
+own security/hosting/governance model -- **not** a deferred APIA phase. See
+`docs/ARCHITECTURE.md` section 7.
 
 ## Running the Phase-1 proof
 

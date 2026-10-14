@@ -1,0 +1,18 @@
+# APIA EXAMPLE scanner plugin (Phase-6a LOCAL plugin).
+#
+# A team-provided LOCAL scanner that EXTENDS the `python` adapter's scanners:
+# contract. It is declarative data read by the off-model scan.py engine and
+# issues NO network/LLM calls. scan.py folds this scanner into the python
+# stack's scanner enumeration (an ADDITIVE wiring; absent plugins change
+# nothing).
+#
+# This EXAMPLE adds a second perf scanner for Python using the existing `radon`
+# normalizer (maintainability index, `mi`). It runs the SAME local radon tool
+# the shipped python.yml perf scanner uses, scoped to the project tree, so it is
+# genuinely runnable in the test suite. Replace or remove for your own scanner.
+stack: python
+category: perf
+scanner:
+  tool: radon-mi
+  command: "python -m radon cc -j -s ."
+  format: radon
