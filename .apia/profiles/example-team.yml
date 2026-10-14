@@ -1,0 +1,34 @@
+# APIA EXAMPLE org/team profile (Phase-6a LOCAL sharing).
+#
+# This is a COMMITTABLE, SHARED profile layered onto .apia/config.yml. It uses
+# the SAME keys as config.yml (no new top-level concepts) and is applied with a
+# documented PRECEDENCE: the profile is deep-merged UNDER the local config, so a
+# key the local .apia/config.yml sets ALWAYS wins; a key the local config does
+# NOT set is FILLED IN from this profile. In other words: LOCAL OVERRIDES THE
+# PROFILE.
+#
+# To USE a profile, a team commits it as `.apia/profile.yml` in the consuming
+# repo (REPO-FIRST: the repo's own .apia/profile.yml is resolved first, then the
+# APIA package's .apia/profile.yml). This file ships as an EXAMPLE under
+# .apia/profiles/ to demonstrate + test the mechanism; copy it to
+# .apia/profile.yml to activate it. Sharing is purely via the git repo -- no
+# server, no network, nothing leaves the machine.
+#
+# The off-model engine .apia/scripts/share.py reads it:
+#   share.py --apply-profile --profile .apia/profiles/example-team.yml --repo .
+#   share.py --manifest --repo . --json   # provenance shows profile-filled keys
+
+# A stricter org-wide review bar (fills in only where local config is silent).
+review:
+  thresholds:
+    fail_on_severity: medium   # org default stricter than the shipped `high`
+    max_findings:
+      security: 0
+      quality: 25              # an org cap the shipped config does not set
+
+# A team-wide token-budget hint for the share stage (local config may override).
+token_budget:
+  share: 2000
+
+# An org confidence bar for the anti-hallucination clarify gate (local wins).
+confidence_threshold: 0.8

@@ -235,6 +235,10 @@ Two hard rules make this trustworthy:
   Copilot session**.
 - APIA ships **no** second/external/hosted LLM verifier. An optional opt-in
   self-hosted second-opinion reviewer is a deferred future phase, off by default.
+  (External/hosted/cross-org **sharing** -- a hosted knowledge service, an MCP server
+  exposing APIA, cross-org APIs, collaborative workspaces, marketplace distribution -- is
+  **intentionally out of scope**, not deferred; APIA's sharing is strictly LOCAL and
+  git-based. See the "Local sharing" section below and `docs/ARCHITECTURE.md` section 7.)
 
 ### Layer 1 - repo-derived ground truth
 
@@ -637,6 +641,117 @@ The five stages each pause at a **human-approval gate**:
 5. **apply** — confirm the commit.
 
 ---
+
+## Local sharing (knowledge packs / profiles / plugins / manifest)
+
+Phase 6a lets a team share knowledge and capabilities the way `.apia/knowledge/` is
+already shared: **through the git repo**. Everything is a committed file, pulled like any
+other. There is **no server, no network, no download, no marketplace** -- the off-model
+engine `.apia/scripts/share.py` only reads/writes LOCAL files and makes **zero LLM/network
+calls**. One mutually-exclusive action per run, plus shared options
+(`--repo` / `--knowledge-dir` / `--out` / `--pack` / `--profile` / `--force` / `--json`).
+
+### Export / import a knowledge pack (safe no-clobber + `--force`)
+
+```sh
+# Export the 8 committed knowledge artifacts (incl. project-facts.md) + the index
+# into one versioned pack (schema_version "1").
+.venv/bin/python .apia/scripts/share.py --export-pack --repo . \
+    --knowledge-dir .apia/knowledge --out team-pack.json
+
+# Import into another checkout's knowledge dir. SAFE by default: a byte-identical or
+# missing artifact is written; a DIVERGENT local artifact is a local correction -- it is
+# KEPT and reported under conflicts/skipped_local, never silently overwritten.
+.venv/bin/python .apia/scripts/share.py --import-pack --pack team-pack.json \
+    --knowledge-dir .apia/knowledge --json
+
+# Only when you deliberately want the pack copy to win over a local correction:
+.venv/bin/python .apia/scripts/share.py --import-pack --pack team-pack.json \
+    --knowledge-dir .apia/knowledge --force --json     # the overrides land in "forced"
+```
+
+A pack with an unknown/newer `schema_version` is **reported** (`unknown_version: true`)
+and **not applied**, so a newer layout can never corrupt an older install.
+
+### Apply an org/team profile (LOCAL overrides win)
+
+A committable profile uses the **same keys as `.apia/config.yml`**. Copy the shipped
+example to activate it, then apply it:
+
+```sh
+cp .apia/profiles/example-team.yml .apia/profile.yml   # activate (REPO-FIRST resolution)
+
+.venv/bin/python .apia/scripts/share.py --apply-profile \
+    --profile .apia/profile.yml --repo . --json
+```
+
+The profile is deep-merged **UNDER** your local config: a key your `.apia/config.yml` sets
+**wins**; a key it leaves unset is **filled in** from the profile. The JSON output's
+`provenance` map shows which keys came from `local` vs `profile`.
+
+### Add a LOCAL plugin (adapter / scanner / shape)
+
+Commit a plugin file under `.apia/plugins/` and it is discovered automatically (REPO-FIRST,
+then the package). Plugins are strictly **additive** -- an absent dir changes nothing -- and
+a **malformed** plugin is reported in `errors` and skipped, never a crash:
+
+```
+.apia/plugins/
+  adapters/<stack>.yml   # a new/overriding adapter (same schema as .apia/adapters/*.yml; `name` required)
+  scanners/<name>.yml    # {stack, category, scanner:{tool,command,format}} extending an adapter's scanners:
+  shapes/<name>.yml      # {shape, ...} naming a new scaffold shape id
+```
+
+```sh
+# See what was discovered + loaded (and any malformed-plugin errors):
+.venv/bin/python .apia/scripts/share.py --plugins --repo . --json
+```
+
+The engines then consume it: `ingest` sees a plugin adapter during stack detection, `scan`
+enumerates a plugin scanner/adapter, `scaffold` lists a plugin shape, and `verify` resolves
+a plugin adapter by name. See `.apia/plugins/README.md` and the plugin contract in
+`.apia/adapters/README.md`. Committed `example-*` plugins demonstrate each kind.
+
+### Query capabilities (manifest / plugins / doctor)
+
+```sh
+# Full machine-readable capability manifest for THIS checkout:
+.venv/bin/python .apia/scripts/share.py --manifest --repo . --json
+# -> adapters complete-vs-stub (python/cpp complete; csharp/groovy stub), available
+#    scanners, supported_shapes (incl. plugin shapes), loaded plugins + errors,
+#    profile provenance, and versions {apia_version "6a", schema_version "1"}.
+
+.venv/bin/python .apia/scripts/share.py --plugins --repo .    # just the plugin catalog
+.venv/bin/python .apia/scripts/share.py --doctor  --repo .    # offline toolchain preflight
+```
+
+## Exercising every APIA feature (VS Code and Visual Studio 2022)
+
+APIA degrades gracefully by host (see `docs/PORTABILITY.md`). **VS Code (Agent Host)**
+loads all tiers: Tier-0 `.github/copilot-instructions.md`, the **Tier-1 prompts**
+(`/apia-*`), the **Tier-2 skills** (rich, token-efficient, forked for heavy work), and the
+**per-stage agents** with approval-gate handoffs. **Visual Studio 2022** loads **only
+Tier-0 + the Tier-1 prompts** (no skills, no agents), so each flow runs as a **single
+agent** driven by the named prompt. The off-model `.apia/scripts/*.py` engines are
+identical on both hosts; only the orchestration surface differs.
+
+| Flow | VS Code (Tier-0 + prompt + skill + agents) | Visual Studio 2022 (Tier-0 + Tier-1 prompt only) |
+|---|---|---|
+| Ingest / clarify / modify / test / apply | `/apia-ingest`, `/apia-clarify`, `/apia-feature`, `/apia-test`, `/apia-apply`; the `apia-ingest` / `apia-test-authoring` skills + per-stage agents (`apia-planner`/`apia-implementer`/`apia-tester`) hand off at each gate | the same prompts driven by one agent via Tier-0 |
+| Feature loop (iterate-to-green) | `/apia-iterate` + the `apia-feature-loop` skill | `/apia-iterate` (single agent) |
+| C++ | same loop; adapter auto-detected; GUI/embedded/driver reported honest-partial | same prompts; launch from the **VS 2022 Developer Command Prompt** so MSBuild/`cl` are on PATH |
+| Eval / iterate-to-best (green AND reviewer gate) | `/apia-iterate` with the reviewer gate; `apia-feature-loop` skill | `/apia-iterate` (single agent) |
+| Reviewer (security/quality/perf/limitations) | `/apia-review` + the `apia-security-scan` / `apia-quality-scan` / `apia-perf-scan` / `apia-limitations` skills + the `apia-reviewer` agent | `/apia-review` (single agent) |
+| Greenfield generation | `/apia-new` + `apia-architect` / `apia-scaffold` / `apia-e2e-verify` agents | `/apia-new` (single agent) |
+| Orchestrator (multi-task task graph) | `/apia-run` + the `apia-orchestrate` skill + `apia-orchestrator` agent | `/apia-run` (single agent) |
+| Iterate-to-best | folded into the loops above via `evalloop.evaluate_quality_gated` (no separate prompt) | same, via the single agent |
+| **Local sharing (packs/profiles/plugins/manifest)** | `/apia-share` + the `apia-share` skill | `/apia-share` (single agent) |
+
+On **either** host the engines can also be driven directly from a terminal with the
+`.venv/bin/python .apia/scripts/*.py ...` commands shown throughout this guide (ingest,
+`verify.py --iterate`, `scan.py`, `scaffold.py`, `orchestrate.py`, and `share.py`); the
+prompts/skills simply wrap those same off-model engines for the agent. Nothing is ever
+auto-pushed on either host -- APIA stops at a local commit and the human pushes manually.
 
 ## Stack support status
 

@@ -32,6 +32,15 @@ token_budget:
                     # this budget bounds the context Copilot consumes per
                     # generation increment. Advisory, not a hard stop; the hard
                     # stop is max_iterations below.
+  share: 2000       # soft ceiling for the Phase-6a LOCAL sharing stage's
+                    # model-facing work (summarizing a capability manifest, an
+                    # import conflict report, or a profile-precedence report for
+                    # the user). The off-model share.py engine does the
+                    # deterministic work for free (versioned knowledge-pack
+                    # export/import with a safe no-clobber merge, org/team
+                    # profile precedence, LOCAL plugin discovery/load, the
+                    # capability manifest); this budget bounds the context
+                    # Copilot consumes to narrate it. Advisory, not a hard stop.
   orchestrate: 3000 # soft ceiling for the Phase-4 ORCHESTRATOR's model-facing
                     # work (planning the task graph from a goal, and the batched
                     # clarify/approval checkpoints). The off-model orchestrate.py
@@ -245,3 +254,40 @@ orchestrate:
 #   build_config: Debug
 #   build_system: cmake
 #   test_command_override: null
+
+# ---------------------------------------------------------------------------
+# Phase-6a LOCAL sharing (off-model engine .apia/scripts/share.py). APIA shares
+# knowledge & capabilities VIA THE GIT REPO (committed files) -- there is NO
+# server, NO network service, and nothing ever leaves the machine. Three
+# COMMITTABLE locations, all under .apia/, drive it (no new top-level config
+# concept is introduced -- these are documented file locations, not new keys):
+#
+#   1. KNOWLEDGE PACKS. A versioned (schema_version) export of the committed
+#      knowledge artifacts under `knowledge_dir` above (project-map.md ...
+#      project-facts.md + .index.json). `share.py --export-pack` writes a
+#      portable pack; `share.py --import-pack` MERGES it into a target knowledge
+#      dir with a SAFE no-clobber rule: a locally-corrected artifact is KEPT and
+#      reported as a conflict, never silently overwritten, unless --force is
+#      given.
+#
+#   2. ORG/TEAM PROFILE: .apia/profile.yml  (an example ships at
+#      .apia/profiles/example-team.yml). The profile uses the SAME keys as THIS
+#      file (review.thresholds, eval_data, generate, orchestrate, token_budget,
+#      confidence_threshold, stacks). PRECEDENCE: the profile is deep-merged
+#      UNDER the local config, so a key THIS file sets ALWAYS wins and a key it
+#      omits is filled in from the profile (LOCAL OVERRIDES THE PROFILE).
+#      Resolution is REPO-FIRST: the consuming repo's .apia/profile.yml first,
+#      then the APIA package's. Apply with `share.py --apply-profile`.
+#
+#   3. LOCAL PLUGIN DISCOVERY DIR: .apia/plugins/ with adapters/ scanners/
+#      shapes/ subdirs (see .apia/plugins/README.md). The off-model loader in
+#      share.py discovers team-provided LOCAL plugin files (NO download/fetch/
+#      marketplace) and the engines (ingest/scan/scaffold/verify) consult it: a
+#      plugin adapter adds/overrides a stack, a plugin scanner extends an
+#      adapter's scanners:, a plugin shape adds a scaffold shape id. A malformed
+#      plugin is captured as an error and skipped -- it never crashes an engine,
+#      and an absent plugin dir changes nothing (plugins are strictly additive).
+#
+# `share.py --manifest` reuses ingest.doctor() + scan/scaffold detection to emit
+# a machine-readable capability manifest (adapters complete-vs-stub, scanners,
+# supported shapes, loaded plugins incl. errors, versions, profile provenance).

@@ -94,6 +94,16 @@ try:
 except ImportError:
     ingest = None
 
+# share.py (Phase-6a) ships the LOCAL plugin loader. scaffold.py consults it so a
+# team-provided LOCAL shape plugin under .apia/plugins/shapes/ is included in the
+# supported-shapes list. The import is OPTIONAL and ADDITIVE: when share.py is
+# absent or no shape plugins are present, resolve_supported_shapes behaves
+# exactly as before. share.py is a LOCAL stdlib-only module (no network/LLM).
+try:
+    import share  # noqa: E402  (reused for plugin_shape_ids())
+except ImportError:
+    share = None
+
 
 # ---------------------------------------------------------------------------
 # Supported shapes vocabulary.
@@ -176,11 +186,25 @@ def resolve_supported_shapes(repo_path=None):
     """
     cfg = _load_config(repo_path)
     generate = cfg.get("generate") if isinstance(cfg, dict) else None
+    base = None
     if isinstance(generate, dict):
         shapes = generate.get("supported_shapes")
         if isinstance(shapes, list) and shapes:
-            return tuple(str(s) for s in shapes)
-    return tuple(SUPPORTED_SHAPES)
+            base = [str(s) for s in shapes]
+    if base is None:
+        base = list(SUPPORTED_SHAPES)
+    # ADDITIVE plugin wiring: append any LOCAL shape plugin ids not already in
+    # the configured/default list, so a team-provided shape under
+    # .apia/plugins/shapes/ is honored. No plugins -> unchanged list.
+    if share is not None:
+        try:
+            for shape in share.plugin_shape_ids(repo_path):
+                if shape not in base:
+                    base.append(shape)
+        except Exception:
+            # Plugin discovery is best-effort and never gates shape resolution.
+            pass
+    return tuple(base)
 
 
 # ---------------------------------------------------------------------------

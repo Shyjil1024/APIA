@@ -71,6 +71,16 @@ try:
 except ImportError:
     ingest = None
 
+# share.py (Phase-6a) ships the LOCAL plugin loader. verify.py consults it so a
+# team-provided LOCAL adapter plugin (.apia/plugins/adapters/) is resolvable by
+# stack name through load_adapter. The import is OPTIONAL and ADDITIVE: when
+# share.py is absent or no adapter plugins are present, load_adapter behaves
+# exactly as before. share.py is a LOCAL stdlib-only module (no network/LLM).
+try:
+    import share  # noqa: E402  (reused for plugin_adapter_path)
+except ImportError:
+    share = None
+
 # evalloop.py ships the Layer-2 self-correction loop machinery (one deterministic
 # verifier cycle, the hard max_iterations cap, the token-budget advisory, the
 # acceptance-criteria confirmation gate). It is imported LAZILY inside the
@@ -112,9 +122,36 @@ def default_adapter_path():
     return os.path.join(apia_dir, "adapters", "python.yml")
 
 
-def load_adapter(adapter_path):
+def resolve_adapter_path(adapter_ref, repo_path=None):
+    """Resolve an adapter reference (a path OR a bare stack name) to a YAML path.
+
+    ADDITIVE plugin wiring (Phase-6a): an existing file path is returned as-is;
+    otherwise, when ``adapter_ref`` is a bare stack NAME and a LOCAL adapter
+    plugin (.apia/plugins/adapters/<name>.yml) declares that stack, the plugin's
+    path is returned so verify.load_adapter can find a team-provided adapter.
+    Returns ``adapter_ref`` unchanged when nothing matches (so the existing
+    file-path behavior and the python-default fallback are untouched). Never
+    raises.
+    """
+    if not adapter_ref:
+        return adapter_ref
+    if os.path.isfile(adapter_ref):
+        return adapter_ref
+    if share is not None and os.sep not in str(adapter_ref) and "/" not in str(adapter_ref):
+        try:
+            plugin_path = share.plugin_adapter_path(adapter_ref, repo_path)
+            if plugin_path:
+                return plugin_path
+        except Exception:
+            pass
+    return adapter_ref
+
+
+def load_adapter(adapter_path, repo_path=None):
     """Load the stack adapter (YAML). PyYAML is the only optional dependency.
 
+    ``adapter_path`` may be a filesystem path OR a bare stack name that a LOCAL
+    adapter plugin provides (resolved via resolve_adapter_path, additive/Phase-6a).
     Falls back to a minimal built-in map if PyYAML is unavailable, so the
     harness still runs the standard pytest commands.
     """
@@ -123,6 +160,7 @@ def load_adapter(adapter_path):
     except ImportError:
         yaml = None
 
+    adapter_path = resolve_adapter_path(adapter_path, repo_path)
     if yaml is not None and adapter_path and os.path.isfile(adapter_path):
         with open(adapter_path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}

@@ -1,0 +1,14 @@
+# APIA EXAMPLE shape plugin (Phase-6a LOCAL plugin).
+#
+# A team-provided LOCAL shape that names a new scaffold shape id. It is
+# declarative data read by the off-model scaffold.py engine and issues NO
+# network/LLM calls. scaffold.resolve_supported_shapes() includes this shape id
+# in the supported-shapes list (an ADDITIVE wiring; absent plugins change
+# nothing). The engine has no built-in emitter for a plugin shape, so it is
+# treated as honest-partial unless a team also provides emission facts.
+#
+# This EXAMPLE adds a `cpp_plugin` shape to demonstrate the mechanism. Replace or
+# remove for your own shape.
+shape: cpp_plugin
+stack: cpp
+description: "Example team-provided C++ plugin shape (demonstration only)."

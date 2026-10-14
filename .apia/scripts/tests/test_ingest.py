@@ -168,3 +168,25 @@ def test_ingest_makes_no_network_or_llm_calls():
     ]
     for token in forbidden:
         assert token not in src, "ingest.py must not reference '{}'".format(token)
+
+
+# --- Phase-6a LOCAL plugin wiring (additive) ---------------------------------
+
+def test_detect_stacks_surfaces_plugin_stack(tmp_path):
+    """A LOCAL adapter plugin's stack is detected when the repo has evidence."""
+    repo = tmp_path / "repo"
+    (repo / ".apia" / "plugins" / "adapters").mkdir(parents=True)
+    (repo / ".apia" / "plugins" / "adapters" / "zig.yml").write_text(
+        "name: zig\ntest_command: zig test\nextensions:\n  - .zig\n"
+        "manifests:\n  - build.zig\n", encoding="utf-8")
+    (repo / "main.zig").write_text("pub fn main() void {}\n", encoding="utf-8")
+    (repo / "build.zig").write_text("// build\n", encoding="utf-8")
+    files = ingest.walk_repo(str(repo))
+    detected = ingest.detect_stacks(str(repo), files)
+    assert "zig" in detected
+    assert detected["zig"]["plugin"] is True
+    # Without the plugin, the stack is not invented.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "main.zig").write_text("pub fn main() void {}\n", encoding="utf-8")
+    assert "zig" not in ingest.detect_stacks(str(plain), ingest.walk_repo(str(plain)))

@@ -271,6 +271,37 @@ and omit it**.
   package directory. Full command strings are used as-is, so absolute tool paths
   (e.g. a full path to `msbuild.exe`) drop in unchanged.
 
+## Phase-6a LOCAL plugin / extension contract
+
+A team may extend APIA with **LOCAL plugins** committed under `.apia/plugins/`
+(see `.apia/plugins/README.md`). Plugins are **shared via the git repo** -- there
+is **no download, no fetch, no marketplace, no network**. The off-model loader in
+`.apia/scripts/share.py` (`discover_plugins()` / `load_plugins()`) scans the dir
+and the engines consult it; discovery is **REPO-FIRST** (the consuming repo's
+`.apia/plugins/` first, then the APIA package's). A **malformed** plugin (bad
+YAML / missing required keys) is captured in the loader's `errors` list and
+**skipped** -- the loader never raises -- and an **absent** plugin dir changes
+nothing (plugins are strictly **additive**).
+
+```
+.apia/plugins/
+  adapters/<stack>.yml   # a new/overriding stack adapter (THIS schema; `name` required)
+  scanners/<name>.yml    # {stack, category, scanner:{tool,command,format}} extending an adapter's scanners:
+  shapes/<name>.yml      # {shape, ...} naming a new scaffold shape id
+```
+
+| Plugin kind | Required keys | Wired into |
+|---|---|---|
+| adapter | `name` (plus the usual adapter keys) | `ingest` detection (when its `extensions`/`manifests` have repo evidence), `scan` + `verify` adapter resolution by `name`. |
+| scanner | `stack`, `category` (`security`\|`quality`\|`perf`), `scanner:{tool,command,format}` | `scan` scanner enumeration for that stack (same `format` dispatch as a built-in `scanners:` entry). |
+| shape | `shape` (the id) | `scaffold.resolve_supported_shapes()` includes the id. |
+
+The committed `example-*.yml` files under `.apia/plugins/` are labeled EXAMPLES
+that make the mechanism demonstrable and testable. A plugin adapter/scanner is
+still subject to the usual contracts above (`result_format` / `format`,
+`manifests`/`extensions` alignment with `ingest.py` `STACK_RULES`, no network/LLM
+calls).
+
 ## Adding or completing a stack (Phase 2)
 
 1. Copy `python.yml` as a starting shape.

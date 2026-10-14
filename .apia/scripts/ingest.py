@@ -51,6 +51,21 @@ import os
 import sys
 from datetime import datetime, timezone
 
+# share.py (Phase-6a) ships the LOCAL plugin loader. ingest.py consults it so a
+# team-provided LOCAL adapter plugin (.apia/plugins/adapters/) contributes its
+# stack to detection even when the built-in STACK_RULES would not surface it
+# (e.g. a new/unusual stack). The import is OPTIONAL and ADDITIVE: when share.py
+# is absent or no adapter plugins are present, detection behaves exactly as
+# before. share.py is a LOCAL stdlib-only module (no network/LLM). The scripts
+# dir is this file's own directory, already importable.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+try:
+    import share  # noqa: E402  (reused for plugin adapter discovery)
+except ImportError:
+    share = None
+
 
 # ---------------------------------------------------------------------------
 # Stack detection rules
@@ -264,6 +279,59 @@ def detect_stacks(repo_path, files):
                 repo_path, files, sorted(set(manifests)), sorted(frameworks), entry["build_system"]
             )
         detected[stack] = entry
+
+    # ADDITIVE plugin wiring (Phase-6a): a team-provided LOCAL adapter plugin
+    # (.apia/plugins/adapters/<stack>.yml) may declare a stack the built-in
+    # STACK_RULES do not model. When such a plugin's declared extensions /
+    # manifests have real evidence in this repo, surface it as a detected stack
+    # so a team adapter is actually discovered. Best-effort and non-crashing:
+    # no plugins -> `detected` is exactly the built-in detection.
+    detected = _augment_detected_with_plugins(repo_path, files, detected,
+                                              basenames, ext_counts)
+    return detected
+
+
+def _augment_detected_with_plugins(repo_path, files, detected, basenames, ext_counts):
+    """Fold LOCAL adapter-plugin stacks (with repo evidence) into `detected`.
+
+    A plugin adapter YAML carries the same ``extensions`` / ``manifests`` keys as
+    a built-in adapter. When a plugin stack is NOT already detected and its
+    declared extensions/manifests have evidence in the repo, add an entry mirror-
+    ing the built-in shape so downstream (stack.md / adapter resolution) finds it.
+    Never raises; returns `detected` unchanged on any failure or when no plugin
+    contributes an evidenced stack.
+    """
+    if share is None:
+        return detected
+    try:
+        catalog = share.load_plugins(repo_path)
+    except Exception:
+        return detected
+    for entry in catalog.get("adapters", []):
+        name = entry.get("name")
+        data = entry.get("data") or {}
+        if not name or name in detected:
+            continue
+        exts_decl = data.get("extensions") or []
+        manifests_decl = (data.get("manifests") or [])
+        matched_exts = {e: ext_counts[e] for e in exts_decl if e in ext_counts}
+        matched_manifests = []
+        for m in manifests_decl:
+            if m in basenames:
+                matched_manifests.append(basenames[m])
+            else:
+                for f in files:
+                    if fnmatch.fnmatch(os.path.basename(f), m):
+                        matched_manifests.append(f)
+        if not matched_exts and not matched_manifests:
+            continue
+        detected[name] = {
+            "manifests": sorted(set(matched_manifests)),
+            "extensions": matched_exts,
+            "source_count": sum(matched_exts.values()),
+            "frameworks": sorted(data.get("frameworks") or []),
+            "plugin": True,
+        }
     return detected
 
 
