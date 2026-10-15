@@ -180,6 +180,27 @@ in the requirements files:
 See `docs/ARCHITECTURE.md` for the full design and `docs/PHASE-1-TASKS.md` for the
 Phase-1 task breakdown.
 
+## Measuring effectiveness (apia-eval)
+
+`apia-eval` is a small, offline, deterministic benchmark that measures APIA's
+deterministic engines (gate / defect-detection / verify / ingest) against seven
+scenarios with fixed, known ground truth, and reports a fixed metric set defined
+before the run. After the one-time `pip install -r requirements-dev.txt`
+bootstrap above (which installs the scanners the scored scenarios need), run it
+with the single documented command:
+
+```sh
+.venv/bin/python .apia/scripts/evalbench.py --out .apia/eval/baseline/latest.json
+```
+
+See `.apia/eval/README.md` for the metric definitions, thresholds, scenario list,
+and how to read the results, and `.apia/eval/baseline/` for the committed
+baseline snapshot (`baseline.json`) and its interpretation (`BASELINE.md`).
+
+**Scope boundary.** apia-eval measures only the deterministic tooling's behavior
+on fixed inputs — fully local, no network, no LLM — and makes **no** claim about
+the quality of AI/LLM-generated code.
+
 ## Running a multi-task orchestrator run
 
 For a goal bigger than one change -- a whole feature on an existing project, or a whole
