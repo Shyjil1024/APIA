@@ -22,3 +22,9 @@ samples/**/out/
 # NOTE: .apia/knowledge/ is intentionally NOT ignored. The cached project
 # knowledge base is committed so it is shared across the team and survives
 # sessions (see docs/ARCHITECTURE.md section 1).
+
+# apia-eval harness runtime output. The committed snapshot of record is
+# .apia/eval/baseline/baseline.json; a fresh `evalbench.py --out ... latest.json`
+# run is regenerated on demand and must never be committed (it would create
+# spurious diffs and could drift from the reviewed baseline).
+.apia/eval/baseline/latest.json
