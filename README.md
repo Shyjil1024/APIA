@@ -152,7 +152,7 @@ Set up the toolchain and run the baselines:
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-pip install pytest
+pip install -r requirements-dev.txt
 
 # green baseline: all tests pass
 python3 -m pytest samples/pyapp -q
@@ -160,6 +160,22 @@ python3 -m pytest samples/pyapp -q
 # legacy case: no tests are collected
 python3 -m pytest samples/legacy_pyapp -q
 ```
+
+`pip install -r requirements-dev.txt` is the single supported setup command: it
+provisions everything needed to run the full test suite green and exercise the
+Python Reviewer scanners -- the test runner (`pytest`), the runtime dependency
+(`PyYAML`, via `requirements.txt`), and the Python scanners the Python adapter
+invokes (`bandit`, `pip-audit`, `ruff`, `flake8`, `radon`).
+
+**System prerequisites (not pip).** A few tools the loop uses are native/system
+packages, installed via `apt`/`brew` rather than pip, and are deliberately NOT
+in the requirements files:
+
+- `cppcheck` and `clang-tidy` -- the C++ Reviewer scanners invoked by
+  `.apia/adapters/cpp.yml` (e.g. `apt install cppcheck clang-tidy`).
+- `cmake`, `ctest`, and a C++ compiler -- the C++ build/test toolchain for the
+  C++ samples (e.g. `apt install cmake g++`). The C++ e2e tests `shutil.which`-
+  guard these and skip cleanly when they are absent.
 
 See `docs/ARCHITECTURE.md` for the full design and `docs/PHASE-1-TASKS.md` for the
 Phase-1 task breakdown.

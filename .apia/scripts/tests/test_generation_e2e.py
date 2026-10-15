@@ -115,16 +115,14 @@ def test_generated_python_sample_builds_runs_tests_and_passes_gate(
 
 
 def test_generated_python_web_api_serves_a_real_endpoint(tmp_path):
-    """The web-API sample's smoke test hits a REAL served endpoint.
+    """The web-API sample's smoke test exercises the REAL request contract.
 
-    The enriched sample mounts health() on a real Flask GET /health route and
-    its test exercises it via Flask's in-process test client, so the "it
-    actually serves HTTP" claim is genuinely executed, not a bare handler call.
-    This asserts the Flask dependency is importable AND the client request path
-    runs (it would FAIL if the route/app factory were broken).
+    The sample is dependency-free: ``create_app()`` returns a framework-agnostic
+    ``handle(method, path, payload)`` dispatcher backed by an in-memory store.
+    This drives that dispatcher directly (no web framework, no socket), so the
+    "it actually serves the HTTP contract" claim is genuinely executed -- it
+    would FAIL if the dispatcher or app factory were broken.
     """
-    flask = pytest.importorskip("flask")
-    assert flask is not None
     work = _copy_sources(os.path.join(GENERATED, "python_web_api"),
                          str(tmp_path / "web"))
     sys.path.insert(0, work)
@@ -134,14 +132,14 @@ def test_generated_python_web_api_serves_a_real_endpoint(tmp_path):
             if mod == "todo_api" or mod.startswith("todo_api."):
                 del sys.modules[mod]
         from todo_api.app import create_app
-        client = create_app().test_client()
-        resp = client.get("/health")
-        assert resp.status_code == 200
-        assert resp.get_json() == {"status": "ok", "service": "todo_api"}
+        handle = create_app()
+        status, body = handle("GET", "/health")
+        assert status == 200
+        assert body == {"status": "ok", "service": "todo_api"}
         # The /items resource round-trips too (real POST then GET).
-        created = client.post("/items", json={"title": "x"})
-        assert created.status_code == 201
-        assert client.get("/items").get_json() == [{"id": 1, "title": "x"}]
+        created_status, created = handle("POST", "/items", {"title": "x"})
+        assert created_status == 201
+        assert handle("GET", "/items") == (200, [{"id": 1, "title": "x"}])
     finally:
         sys.path.remove(work)
         for mod in list(sys.modules):

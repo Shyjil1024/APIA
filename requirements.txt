@@ -1,0 +1,9 @@
+# Runtime dependencies for the APIA off-model scripts (.apia/scripts/*.py).
+#
+# PyYAML is the ONLY third-party runtime import anywhere in the production
+# scripts. It is used to read the declarative config (.apia/config.yml) and the
+# stack adapters (.apia/adapters/*.yml); every script imports it under a guarded
+# try/except and degrades to defaults when it is absent, so it is a soft runtime
+# dependency rather than a hard one -- but it IS required to exercise the
+# adapter-driven paths (scan.py, ingest.py, verify.py, scaffold.py, etc.).
+pyyaml>=6,<7

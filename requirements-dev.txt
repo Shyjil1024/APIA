@@ -1,0 +1,24 @@
+# Dev/test dependencies: everything needed to run the full test suite green and
+# exercise the Python Reviewer scanners. Installing this file provisions the
+# complete supported development environment (it pulls in the runtime deps via
+# the include below). SYSTEM scanner tools used by the C++ adapter
+# (cppcheck, clang-tidy) and the C++ build toolchain (cmake, ctest, a C++
+# compiler) are NOT pip packages and are listed as system prerequisites in the
+# README -- they deliberately do NOT appear here.
+#
+# Pins are compatible-release ranges (sensible lower + upper bound), not bare
+# names. If a pinned range proves unavailable at install time it may be widened
+# to the nearest compatible release.
+-r requirements.txt
+
+# Test runner (every test module imports pytest).
+pytest>=8,<9
+
+# Python Reviewer scanners the python.yml adapter actually invokes
+# (.apia/adapters/python.yml -> scanners); test_scan.py executes these for real
+# against samples/pyapp, so they must be installed to run the full suite green.
+bandit>=1.7,<2
+pip-audit>=2.7,<3
+ruff>=0.5,<1
+flake8>=7,<8
+radon>=6,<7
