@@ -1,0 +1,17 @@
+id: gate_fail_pyapp
+description: >
+  pyapp with its reviewer fixtures must FAIL the tri-state gate on a real
+  high-severity bandit finding (B602) and the pip-audit CVE.
+engine: scan
+metric: gate_correctness
+repo: ../../../../samples/pyapp
+adapter: python
+options: {}
+expected:
+  gate_status: FAILED
+  rules_present: [B602]
+tool_requirements: [bandit, pip-audit]
+notes: >
+  B602 is a HIGH finding; with fail_on_severity=high the gate is driven to
+  FAILED regardless of the CVE. Scorable only when bandit and pip-audit are
+  present (design §2.3 S1); otherwise skipped, never a hollow pass.

@@ -1,0 +1,19 @@
+id: gate_incomplete_missing_scanner
+description: >
+  cppapp reviewed with the cpp adapter must return INCOMPLETE because the
+  REQUIRED scanner cppcheck is absent in the reference environment.
+engine: scan
+metric: gate_correctness
+repo: ../../../../samples/cppapp
+adapter: cpp
+options: {}
+expected:
+  gate_status: INCOMPLETE
+  incomplete_includes: [cppcheck]
+tool_requirements: ['!cppcheck']
+notes: >
+  Negative requirement: cppcheck must be ABSENT. In cpp.yml, clang-tidy is
+  required:false (advisory, needs a compile DB), so its presence is immaterial
+  to the verdict; only cppcheck's absence drives INCOMPLETE. An environment with
+  cppcheck present reports this scenario as skipped, not a false fail
+  (design §2.3 S3).

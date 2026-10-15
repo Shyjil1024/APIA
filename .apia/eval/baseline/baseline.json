@@ -1,0 +1,301 @@
+{
+  "aggregate": {
+    "defect_detection": {
+      "declared": 3,
+      "detected": 3,
+      "expected": 3,
+      "good": 1.0,
+      "scored": 3,
+      "value": 1.0
+    },
+    "false_negative": 0,
+    "false_positive": 0,
+    "gate_correctness": {
+      "correct": 3,
+      "declared": 3,
+      "good": 1.0,
+      "scored": 3,
+      "value": 1.0
+    },
+    "headline": {
+      "corpus_pass_rate": 1.0,
+      "gate_correctness": 1.0,
+      "status": "full"
+    },
+    "ingest_accuracy": {
+      "declared": 1,
+      "ok": 3,
+      "scored": 1,
+      "total": 3,
+      "value": 1.0
+    },
+    "scenarios_failed": 0,
+    "scenarios_passed": 7,
+    "scenarios_scored": 7,
+    "scenarios_skipped": 0,
+    "scenarios_skipped_detail": [],
+    "scenarios_total": 7,
+    "verification_correctness": {
+      "accept": true,
+      "declared": 2,
+      "pass": true,
+      "reject": true,
+      "scored": 2
+    }
+  },
+  "generated_at": "2026-10-15T07:12:28Z",
+  "scenarios": [
+    {
+      "actual": {
+        "gate_status": "FAILED",
+        "incomplete_reason": [],
+        "rules": [
+          "B101",
+          "B105",
+          "B404",
+          "B602",
+          "E501",
+          "I001",
+          "PYSEC-2019-217",
+          "PYSEC-2021-66",
+          "PYSEC-2026-1471",
+          "PYSEC-2026-1473",
+          "PYSEC-2026-1474",
+          "PYSEC-2026-1475",
+          "RUF022",
+          "RUF100",
+          "UP032"
+        ]
+      },
+      "checks": [
+        {
+          "key": "rules_present",
+          "ok": true
+        }
+      ],
+      "engine": "scan",
+      "expected": {
+        "rules_present": [
+          "B602",
+          "B105"
+        ]
+      },
+      "id": "defect_detection_bandit",
+      "metric": "defect_detection",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "gate_status": "FAILED",
+        "incomplete_reason": [],
+        "rules": [
+          "B101",
+          "B105",
+          "B404",
+          "B602",
+          "E501",
+          "I001",
+          "PYSEC-2019-217",
+          "PYSEC-2021-66",
+          "PYSEC-2026-1471",
+          "PYSEC-2026-1473",
+          "PYSEC-2026-1474",
+          "PYSEC-2026-1475",
+          "RUF022",
+          "RUF100",
+          "UP032"
+        ]
+      },
+      "checks": [
+        {
+          "key": "gate_status",
+          "ok": true
+        },
+        {
+          "key": "rules_present",
+          "ok": true
+        }
+      ],
+      "engine": "scan",
+      "expected": {
+        "gate_status": "FAILED",
+        "rules_present": [
+          "B602"
+        ]
+      },
+      "id": "gate_fail_pyapp",
+      "metric": "gate_correctness",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "gate_status": "INCOMPLETE",
+        "incomplete_reason": [
+          "cppcheck (unavailable)"
+        ],
+        "rules": []
+      },
+      "checks": [
+        {
+          "key": "gate_status",
+          "ok": true
+        },
+        {
+          "key": "incomplete_includes",
+          "ok": true
+        }
+      ],
+      "engine": "scan",
+      "expected": {
+        "gate_status": "INCOMPLETE",
+        "incomplete_includes": [
+          "cppcheck"
+        ]
+      },
+      "id": "gate_incomplete_missing_scanner",
+      "metric": "gate_correctness",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "gate_status": "PASSED",
+        "incomplete_reason": [],
+        "rules": []
+      },
+      "checks": [
+        {
+          "key": "gate_status",
+          "ok": true
+        },
+        {
+          "key": "rules_present",
+          "ok": true
+        }
+      ],
+      "engine": "scan",
+      "expected": {
+        "gate_status": "PASSED",
+        "rules_present": []
+      },
+      "id": "gate_pass_clean",
+      "metric": "gate_correctness",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "apia_paths_absent": true,
+        "apia_paths_present": [
+          ".apia/scripts/foo.py",
+          ".apia/scripts/tests/test_foo.py"
+        ],
+        "test_count_delta": 1
+      },
+      "checks": [
+        {
+          "key": "apia_paths_absent",
+          "ok": true
+        },
+        {
+          "key": "apia_paths_present",
+          "ok": true
+        },
+        {
+          "key": "test_count_delta",
+          "ok": true
+        }
+      ],
+      "engine": "ingest",
+      "expected": {
+        "apia_paths_absent": true,
+        "apia_paths_present": [
+          ".apia/scripts/foo.py",
+          ".apia/scripts/tests/test_foo.py"
+        ],
+        "test_count_delta": 1
+      },
+      "id": "ingest_include_apia",
+      "metric": "ingest_accuracy",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "golden_all_match": true,
+        "mismatch_artifact": null,
+        "mismatch_count": 0
+      },
+      "checks": [
+        {
+          "key": "golden_all_match",
+          "ok": true
+        }
+      ],
+      "engine": "evaldata",
+      "expected": {
+        "golden_all_match": true
+      },
+      "id": "verify_golden_accept",
+      "metric": "verification_correctness",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    },
+    {
+      "actual": {
+        "golden_all_match": false,
+        "mismatch_artifact": "out/report.json",
+        "mismatch_count": 1
+      },
+      "checks": [
+        {
+          "key": "golden_all_match",
+          "ok": true
+        },
+        {
+          "key": "mismatch_count",
+          "ok": true
+        },
+        {
+          "key": "mismatch_artifact",
+          "ok": true
+        }
+      ],
+      "engine": "evaldata",
+      "expected": {
+        "golden_all_match": false,
+        "mismatch_artifact": "out/report.json",
+        "mismatch_count": 1
+      },
+      "id": "verify_golden_reject",
+      "metric": "verification_correctness",
+      "passed": true,
+      "skip_reason": null,
+      "status": "scored"
+    }
+  ],
+  "schema_version": 1,
+  "scope_note": "Measures APIA's deterministic tooling (gate/defect-detection/verify/ingest) on fixed inputs only. Makes NO claim about AI/LLM-generated-code quality. Fully offline; no network, no LLM.",
+  "tool_env": {
+    "python": "3.11.15",
+    "scanners_absent": [
+      "cppcheck"
+    ],
+    "scanners_present": [
+      "bandit",
+      "pip-audit",
+      "ruff",
+      "flake8",
+      "radon",
+      "clang-tidy"
+    ]
+  }
+}

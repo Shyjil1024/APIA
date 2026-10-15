@@ -1,0 +1,23 @@
+id: ingest_include_apia
+description: >
+  Ingest run twice against the same stand-in repo: the default excludes .apia,
+  while include_apia adds exactly the .apia/scripts paths and increases
+  test_count.
+engine: ingest
+metric: ingest_accuracy
+repo: fixture
+adapter: python
+options: {}
+expected:
+  apia_paths_absent: true
+  apia_paths_present:
+    - .apia/scripts/foo.py
+    - .apia/scripts/tests/test_foo.py
+  test_count_delta: 1
+tool_requirements: []
+notes: >
+  Two-run default-vs-include_apia assertion: (a) the default run's source index
+  contains no .apia/... path (apia_paths_absent); (b) the include_apia run's
+  index contains the two declared .apia/scripts paths and a strictly larger
+  test_count (test_count_delta=1 from the one added .apia test)
+  (design §2.3 S7, §3.2 metric 5).

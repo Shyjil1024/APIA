@@ -1,0 +1,23 @@
+id: verify_golden_reject
+description: >
+  Known-bad verification: after production, one numeric digit inside
+  out/report.json is altered, producing exactly one mismatch under json mode
+  while the untouched CSV still matches.
+engine: evaldata
+metric: verification_correctness
+repo: ../../../../samples/pyapp
+adapter: python
+options:
+  producer: python -m calc.report out/report.json out/table.csv
+  perturb:
+    artifact: out/report.json
+    kind: json-digit
+expected:
+  golden_all_match: false
+  mismatch_count: 1
+  mismatch_artifact: out/report.json
+tool_requirements: []
+notes: >
+  The single-digit edit is mode-significant under json (it changes the parsed
+  structure, not just whitespace/key order, so it cannot be canonicalized away);
+  the CSV is untouched and stays matched (design §2.3 S6, MEDIUM-2/MEDIUM-3).

@@ -1,0 +1,10 @@
+# APIA-EVAL FIXTURE — not product code.
+# Bandit config for the gate_pass_clean (S2) fixture. B101 (assert_used) is
+# skipped because the fixture's pytest tests use bare `assert` by design; this
+# is the standard bandit setting for a pytest-based project, NOT a weakening of
+# the gate (real findings such as B602/B105 and pip-audit CVEs are still
+# reported and still fail the tri-state gate). This mirrors the repo precedent
+# at samples/generated/python_web_api/.bandit so the "clean" fixture honestly
+# represents a project that is legitimately clean under its own scanner config.
+[bandit]
+skips = B101

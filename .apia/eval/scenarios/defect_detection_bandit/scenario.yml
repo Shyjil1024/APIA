@@ -1,0 +1,15 @@
+id: defect_detection_bandit
+description: >
+  pyapp's reviewer fixtures carry two bandit smells that defect detection must
+  surface: B602 (subprocess shell=True) and B105 (hardcoded password).
+engine: scan
+metric: defect_detection
+repo: ../../../../samples/pyapp
+adapter: python
+options: {}
+expected:
+  rules_present: [B602, B105]
+tool_requirements: [bandit]
+notes: >
+  Both findings come from calc/insecure_demo.py and require bandit to be
+  present; otherwise skipped (design §2.3 S4).

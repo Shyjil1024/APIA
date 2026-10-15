@@ -1,0 +1,17 @@
+id: gate_pass_clean
+description: >
+  A lint-clean Python package where every required Python scanner runs and finds
+  nothing must PASS the tri-state gate — the only honest PASSED case.
+engine: scan
+metric: gate_correctness
+repo: fixture/cleanpy
+adapter: python
+options: {}
+expected:
+  gate_status: PASSED
+  rules_present: []
+tool_requirements: [bandit, pip-audit, ruff, flake8, radon]
+notes: >
+  A PASSED is meaningful only when every required Python scanner actually ran;
+  if any is absent the gate is INCOMPLETE, not PASSED, so this scenario is
+  skipped unless all five are present (design §2.3 S2).
