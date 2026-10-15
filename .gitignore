@@ -28,3 +28,9 @@ samples/**/out/
 # run is regenerated on demand and must never be committed (it would create
 # spurious diffs and could drift from the reviewed baseline).
 .apia/eval/baseline/latest.json
+
+# apia-tokenbench harness runtime output. The committed snapshot of record is
+# .apia/eval/tokenbench/baseline.json; a fresh `tokenbench.py --out ... latest.json`
+# run is regenerated on demand and must never be committed (it would also perturb
+# the apia_self self-ingest universe and drift from the reviewed baseline).
+.apia/eval/tokenbench/latest.json

@@ -201,6 +201,35 @@ baseline snapshot (`baseline.json`) and its interpretation (`BASELINE.md`).
 on fixed inputs — fully local, no network, no LLM — and makes **no** claim about
 the quality of AI/LLM-generated code.
 
+## Context-efficiency (apia-tokenbench)
+
+`apia-tokenbench` is a small, offline, deterministic benchmark that substantiates
+APIA's "minimize token/credit usage" design driver with a repeatable, honestly
+scoped **context-size proxy**. For each sample project it measures how much
+repository context a model would consume under a naive full-context baseline (every
+tracked, non-binary source file) versus APIA's retrieve-over-re-reading approach
+(its distilled `.apia/knowledge/*.md` base plus a bounded, representative retrieved
+slice of ≤ 8 files), and reports the reduction in bytes and tokenizer-estimated
+tokens per project and in a pooled aggregate. It reuses `ingest.walk_repo()` /
+`ingest.DEFAULT_IGNORES` for the file universe (both sides share one walk) and
+`ingest.ingest()` for the knowledge base, and changes no engine behavior. The run
+uses the project `.venv` interpreter:
+
+```sh
+.venv/bin/python .apia/scripts/tokenbench.py --out .apia/eval/tokenbench/latest.json
+```
+
+See `.apia/eval/README.md` for the metric, the baseline file-set rule, the
+retrieval-slice rule, exit codes, and how to read the results, and
+`.apia/eval/tokenbench/` for the committed snapshot (`baseline.json`) and its
+interpretation (`BASELINE.md`).
+
+**Scope boundary.** apia-tokenbench measures a **context-size proxy** only. The
+tokens it reports are **estimates** from the recorded tokenizer, **NOT billed** real
+Copilot tokens, and the benchmark guarantees **no** token/credit/dollar savings. It
+is fully local — **no network**, **no LLM** — and the fixed retrieval slice is a
+representative stand-in: a real task may read more or fewer files.
+
 ## Running a multi-task orchestrator run
 
 For a goal bigger than one change -- a whole feature on an existing project, or a whole

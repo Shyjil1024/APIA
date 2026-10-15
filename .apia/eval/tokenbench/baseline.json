@@ -1,0 +1,187 @@
+{
+  "aggregate": {
+    "apia": {
+      "bytes": 80730,
+      "tokens": 20203
+    },
+    "baseline": {
+      "bytes": 1532909,
+      "tokens": 383310
+    },
+    "method": "pooled-totals",
+    "reduction": {
+      "bytes_abs": 1452179,
+      "bytes_pct": 94.73354256514901,
+      "tokens_abs": 363107,
+      "tokens_pct": 94.72933135060396
+    }
+  },
+  "generated_at": "2026-10-15T11:05:52Z",
+  "projects": [
+    {
+      "apia": {
+        "bytes": 6740,
+        "files": 16,
+        "knowledge": {
+          "bytes": 2121,
+          "files": 8,
+          "tokens": 533
+        },
+        "slice": {
+          "bytes": 4619,
+          "files": [
+            ".ruff_cache/.gitignore",
+            ".ruff_cache/CACHEDIR.TAG",
+            "calc/__init__.py",
+            "calc/insecure_demo.py",
+            "calc/operations.py",
+            "pyproject.toml",
+            "requirements-vuln.txt",
+            "tests/test_multiply.py"
+          ],
+          "tokens": 1157
+        },
+        "tokens": 1690
+      },
+      "baseline": {
+        "bytes": 9330,
+        "files": 12,
+        "tokens": 2336
+      },
+      "include_apia": false,
+      "label": "pyapp",
+      "reduction": {
+        "bytes_abs": 2590,
+        "bytes_pct": 27.759914255091104,
+        "tokens_abs": 646,
+        "tokens_pct": 27.654109589041095
+      },
+      "repo": "samples/pyapp"
+    },
+    {
+      "apia": {
+        "bytes": 8454,
+        "files": 15,
+        "knowledge": {
+          "bytes": 2251,
+          "files": 8,
+          "tokens": 567
+        },
+        "slice": {
+          "bytes": 6203,
+          "files": [
+            "README.md",
+            "legacy_pyapp/__init__.py",
+            "legacy_pyapp/inventory.py",
+            "pyproject.toml",
+            "tests/__init__.py",
+            "tests/test_inventory_characterization.py",
+            "tests/test_reorder.py"
+          ],
+          "tokens": 1552
+        },
+        "tokens": 2119
+      },
+      "baseline": {
+        "bytes": 6203,
+        "files": 7,
+        "tokens": 1552
+      },
+      "include_apia": false,
+      "label": "legacy_pyapp",
+      "reduction": {
+        "bytes_abs": -2251,
+        "bytes_pct": -36.28889247138481,
+        "tokens_abs": -567,
+        "tokens_pct": -36.53350515463917
+      },
+      "repo": "samples/legacy_pyapp"
+    },
+    {
+      "apia": {
+        "bytes": 4352,
+        "files": 14,
+        "knowledge": {
+          "bytes": 1738,
+          "files": 8,
+          "tokens": 436
+        },
+        "slice": {
+          "bytes": 2614,
+          "files": [
+            ".bandit",
+            "greet_cli/__init__.py",
+            "greet_cli/__main__.py",
+            "pyproject.toml",
+            "tests/test_greet.py",
+            "tests/test_smoke.py"
+          ],
+          "tokens": 656
+        },
+        "tokens": 1092
+      },
+      "baseline": {
+        "bytes": 2614,
+        "files": 6,
+        "tokens": 656
+      },
+      "include_apia": false,
+      "label": "python_cli",
+      "reduction": {
+        "bytes_abs": -1738,
+        "bytes_pct": -66.48814078041316,
+        "tokens_abs": -436,
+        "tokens_pct": -66.46341463414635
+      },
+      "repo": "samples/generated/python_cli"
+    },
+    {
+      "apia": {
+        "bytes": 61184,
+        "files": 16,
+        "knowledge": {
+          "bytes": 33619,
+          "files": 8,
+          "tokens": 8408
+        },
+        "slice": {
+          "bytes": 27565,
+          "files": [
+            ".apia/eval/scenarios/gate_pass_clean/fixture/cleanpy/tests/test_arithmetic.py",
+            ".gitignore",
+            "README.md",
+            "samples/cppapp/src/report_main.cpp",
+            "samples/cppapp/tests/test_mathops.cpp",
+            "samples/generated/cpp_console/src/main.cpp",
+            "samples/generated/python_cli/greet_cli/__main__.py",
+            "samples/generated/python_web_api/todo_api/app.py"
+          ],
+          "tokens": 6894
+        },
+        "tokens": 15302
+      },
+      "baseline": {
+        "bytes": 1514762,
+        "files": 202,
+        "tokens": 378766
+      },
+      "include_apia": true,
+      "label": "apia_self",
+      "reduction": {
+        "bytes_abs": 1453578,
+        "bytes_pct": 95.9608176069904,
+        "tokens_abs": 363464,
+        "tokens_pct": 95.96003865183253
+      },
+      "repo": "."
+    }
+  ],
+  "retrieval_slice": {
+    "max_files": 8,
+    "rule": "entrypoint+public+test+fill"
+  },
+  "schema_version": 1,
+  "scope_note": "Measures a deterministic CONTEXT-SIZE PROXY: repo bytes/tokens a model would read under APIA's distilled knowledge base + a fixed representative retrieved slice, versus a naive whole-repo baseline. Tokens are ESTIMATES from the recorded tokenizer, NOT billed Copilot tokens; this proves NO token/credit/dollar savings. Fully offline; no network, no LLM. Real retrieval for a specific task may read more or fewer files than the fixed slice.",
+  "tiktoken_present": false,
+  "tokenizer": "heuristic:ceil(len_utf8_bytes/4)"
+}

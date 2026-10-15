@@ -1,0 +1,108 @@
+# apia-tokenbench baseline interpretation
+
+This file interprets the committed snapshot `baseline.json` in this directory. It
+is written by reading that JSON, not from memory: every number below is transcribed
+from the snapshot's own `projects` / `aggregate` fields and the tokenizer it records.
+
+> **Schema contract.** `baseline.json` carries `"schema_version": 1`. A reader
+> (human or tool) must check that value and **fail loud** on any unrecognized
+> version rather than guessing at the layout — the fields described here apply to
+> schema version 1 only.
+
+## Reference environment (from `baseline.json`)
+
+- `"tokenizer": "heuristic:ceil(len_utf8_bytes/4)"` — the optional `tiktoken`
+  dependency is **absent** in the reference environment, so the benchmark degraded
+  gracefully to the documented `ceil(utf-8 bytes / 4)` heuristic and recorded that
+  it did so.
+- `"tiktoken_present": false` — records the optional-dependency availability
+  honestly. Had `tiktoken` been installed, the snapshot would record
+  `tiktoken:cl100k_base` and the token counts (not the byte counts) would differ;
+  determinism is guaranteed **for a given tokenizer**, so a snapshot is only
+  byte-comparable to a run under the same recorded tokenizer.
+- `"retrieval_slice": { "rule": "entrypoint+public+test+fill", "max_files": 8 }` —
+  the slice rule id and its bound **N = 8**.
+
+## What each number means (from `baseline.json`)
+
+### Aggregate (pooled totals)
+
+From `baseline.json` → `aggregate` (`"method": "pooled-totals"`):
+
+- **bytes:** baseline `1532909` → APIA `80730`, reduction `1452179`
+  (`bytes_pct ≈ 94.73%`).
+- **tokens:** baseline `383310` → APIA `20203`, reduction `363107`
+  (`tokens_pct ≈ 94.73%`).
+
+The aggregate is **pooled totals** — `Σ baseline` vs `Σ APIA`, one pooled percentage
+per metric — **not** a mean of the per-project percentages. A mean would weight a
+tiny project the same as a large one and could be gamed by adding small projects;
+the pooled figure reports the honest "across this whole corpus, how much less
+context." The pooled headline is dominated by the large `apia_self` project, which
+is why it sits near that project's own percentage; the per-project rows below show
+the honest spread.
+
+### Per-project
+
+| label | baseline bytes | APIA bytes | bytes reduction | baseline tokens | APIA tokens | tokens reduction |
+|-------|---------------:|-----------:|----------------:|----------------:|------------:|-----------------:|
+| `pyapp` | 9330 | 6740 | **+27.76%** | 2336 | 1690 | **+27.65%** |
+| `legacy_pyapp` | 6203 | 8454 | **−36.29%** | 1552 | 2119 | **−36.53%** |
+| `python_cli` | 2614 | 4352 | **−66.49%** | 656 | 1092 | **−66.46%** |
+| `apia_self` | 1514762 | 61184 | **+95.96%** | 378766 | 15302 | **+95.96%** |
+
+- For each project, `apia.bytes = knowledge.bytes + slice.bytes` (tokens/files
+  likewise). The two parts are **disjoint by construction** — the knowledge base is
+  the eight temp-dir `.md` artifacts from `ingest.ingest()`, the slice is repo
+  sources from the shared walk — so there is **no de-duplication**. For every
+  project `knowledge.files == 8` (the eight `ingest.ARTIFACTS`), guaranteed by the
+  harness's hard post-ingest assertion that all eight exist (a missing artifact is a
+  fatal `BenchError`, never a silently smaller APIA figure).
+- **The two small projects show a *negative* reduction** (`legacy_pyapp`,
+  `python_cli`): APIA's distilled knowledge base plus an ≤ 8-file slice is *larger*
+  than simply concatenating their handful of source files. This is reported
+  **honestly and un-clamped** — it is the expected and correct behavior of a
+  context-reduction mechanism on a project small enough that there is little to
+  distill. The reduction only becomes large on `apia_self`, a realistically-sized
+  codebase (202 countable files) where re-reading everything is `1514762` bytes but
+  the distilled base + slice is `61184`.
+- **Fixed-slice caveat.** The slice is a **single, fixed-size representative
+  stand-in** (≤ 8 files), chosen so the comparison is apples-to-apples across
+  projects. Real retrieval for a *specific* task may read **more or fewer** files — a
+  sweeping refactor might touch dozens, a one-line fix might touch one. The JSON
+  records each project's slice file list so the choice is visible and reproducible.
+  For `apia_self` the slice is:
+  `.apia/eval/scenarios/gate_pass_clean/fixture/cleanpy/tests/test_arithmetic.py`,
+  `.gitignore`, `README.md`, `samples/cppapp/src/report_main.cpp`,
+  `samples/cppapp/tests/test_mathops.cpp`,
+  `samples/generated/cpp_console/src/main.cpp`,
+  `samples/generated/python_cli/greet_cli/__main__.py`,
+  `samples/generated/python_web_api/todo_api/app.py`.
+
+### The `apia_self` self-reference carve-out
+
+`apia_self` uses `include_apia=True`, so `walk_repo` would otherwise surface the
+benchmark's own output (`.apia/eval/tokenbench/latest.json` / `baseline.json`). The
+harness carves out the `.apia/eval/tokenbench/` prefix from the single shared
+universe **before** either side counts, so the self figure never measures its own
+artifacts and is reproducible from the committed tree. The carve-out is a no-op for
+the three `samples/*` projects. This is why `apia_self`'s baseline includes APIA's
+own `.apia/**` sources (honestly a larger baseline) but **not** this directory.
+
+## What this baseline does NOT prove (scope boundary)
+
+- It measures a deterministic **context-size proxy** — repository bytes and
+  tokenizer-estimated tokens — for APIA's distilled-knowledge-plus-retrieved-slice
+  approach versus a naive whole-repo baseline. It is **not** a measurement of real
+  **billed Copilot tokens**, credits, or dollars.
+- The tokens reported are **estimates** from the recorded tokenizer
+  (`heuristic:ceil(len_utf8_bytes/4)` here); they are **NOT billed** tokens and this
+  benchmark guarantees **no** token/credit/dollar savings.
+- The run is fully **local, offline, and deterministic**: **no network** and
+  **no LLM** calls anywhere in the harness or corpus (enforced by a static guard
+  self-test).
+- The corpus is **deliberately small** (three Python samples + APIA self-ingest),
+  chosen to be reproducible from the committed tree. It is honest, not statistically
+  powered, and **not** a before/after study on real external projects.
+- The retrieved slice is a **fixed-size representative stand-in**, not a claim that
+  every task reads exactly that set of files.
