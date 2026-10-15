@@ -1,60 +1,60 @@
 {
   "aggregate": {
     "apia": {
-      "bytes": 80730,
-      "tokens": 20203
+      "bytes": 85120,
+      "tokens": 21301
     },
     "baseline": {
-      "bytes": 1532909,
-      "tokens": 383310
+      "bytes": 1539257,
+      "tokens": 384898
     },
     "method": "pooled-totals",
     "reduction": {
-      "bytes_abs": 1452179,
-      "bytes_pct": 94.73354256514901,
-      "tokens_abs": 363107,
-      "tokens_pct": 94.72933135060396
+      "bytes_abs": 1454137,
+      "bytes_pct": 94.47005925586176,
+      "tokens_abs": 363597,
+      "tokens_pct": 94.46580652536517
     }
   },
-  "generated_at": "2026-10-15T11:05:52Z",
+  "generated_at": "2026-10-15T11:19:06Z",
   "projects": [
     {
       "apia": {
-        "bytes": 6740,
+        "bytes": 11011,
         "files": 16,
         "knowledge": {
-          "bytes": 2121,
+          "bytes": 1941,
           "files": 8,
-          "tokens": 533
+          "tokens": 488
         },
         "slice": {
-          "bytes": 4619,
+          "bytes": 9070,
           "files": [
-            ".ruff_cache/.gitignore",
-            ".ruff_cache/CACHEDIR.TAG",
             "calc/__init__.py",
             "calc/insecure_demo.py",
             "calc/operations.py",
+            "calc/report.py",
             "pyproject.toml",
             "requirements-vuln.txt",
-            "tests/test_multiply.py"
+            "tests/test_multiply.py",
+            "tests/test_operations.py"
           ],
-          "tokens": 1157
+          "tokens": 2270
         },
-        "tokens": 1690
+        "tokens": 2758
       },
       "baseline": {
-        "bytes": 9330,
-        "files": 12,
-        "tokens": 2336
+        "bytes": 9252,
+        "files": 10,
+        "tokens": 2316
       },
       "include_apia": false,
       "label": "pyapp",
       "reduction": {
-        "bytes_abs": 2590,
-        "bytes_pct": 27.759914255091104,
-        "tokens_abs": 646,
-        "tokens_pct": 27.654109589041095
+        "bytes_abs": -1759,
+        "bytes_pct": -19.012105490704712,
+        "tokens_abs": -442,
+        "tokens_pct": -19.0846286701209
       },
       "repo": "samples/pyapp"
     },
@@ -137,12 +137,12 @@
     },
     {
       "apia": {
-        "bytes": 61184,
+        "bytes": 61303,
         "files": 16,
         "knowledge": {
-          "bytes": 33619,
+          "bytes": 33738,
           "files": 8,
-          "tokens": 8408
+          "tokens": 8438
         },
         "slice": {
           "bytes": 27565,
@@ -158,20 +158,20 @@
           ],
           "tokens": 6894
         },
-        "tokens": 15302
+        "tokens": 15332
       },
       "baseline": {
-        "bytes": 1514762,
-        "files": 202,
-        "tokens": 378766
+        "bytes": 1521188,
+        "files": 204,
+        "tokens": 380374
       },
       "include_apia": true,
       "label": "apia_self",
       "reduction": {
-        "bytes_abs": 1453578,
-        "bytes_pct": 95.9608176069904,
-        "tokens_abs": 363464,
-        "tokens_pct": 95.96003865183253
+        "bytes_abs": 1459885,
+        "bytes_pct": 95.97005761286573,
+        "tokens_abs": 365042,
+        "tokens_pct": 95.9692302838785
       },
       "repo": "."
     }

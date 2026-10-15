@@ -136,6 +136,7 @@ DEFAULT_IGNORES = {
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
+    ".ruff_cache",
     "node_modules",
     ".idea",
     ".vs",
