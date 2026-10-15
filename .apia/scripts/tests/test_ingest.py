@@ -170,6 +170,81 @@ def test_ingest_makes_no_network_or_llm_calls():
         assert token not in src, "ingest.py must not reference '{}'".format(token)
 
 
+# --- opt-in self-ingest of the .apia package (--include-apia) ----------------
+#
+# .apia is excluded BY DEFAULT so an ordinary ingest never indexes APIA's own
+# machinery. The opt-in --include-apia flag / include_apia=True parameter removes
+# .apia from the effective ignore set so APIA can index its OWN scripts/tests/
+# adapters for the knowledge base it builds about itself.
+
+def _make_project_with_apia(root):
+    """Lay down a minimal Python project with a nested .apia/ subtree.
+
+    Built entirely in a tmp dir (does not rely on the real repo layout).
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\nversion = \"0.1\"\n", encoding="utf-8")
+    pkg = root / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    tests = root / "tests"
+    tests.mkdir()
+    (tests / "test_mod.py").write_text(
+        "from pkg.mod import f\n\ndef test_f():\n    assert f() == 1\n",
+        encoding="utf-8")
+    # Nested .apia/ subtree that must be excluded by default, indexed with flag.
+    apia_scripts = root / ".apia" / "scripts"
+    apia_scripts.mkdir(parents=True)
+    (apia_scripts / "scan.py").write_text(
+        "def scan():\n    return []\n", encoding="utf-8")
+    apia_tests = apia_scripts / "tests"
+    apia_tests.mkdir()
+    (apia_tests / "test_x.py").write_text(
+        "def test_x():\n    assert True\n", encoding="utf-8")
+    apia_adapters = root / ".apia" / "adapters"
+    apia_adapters.mkdir(parents=True)
+    (apia_adapters / "python.yml").write_text("name: python\n", encoding="utf-8")
+    return root
+
+
+def test_default_run_excludes_apia(tmp_path):
+    """Default ingest of a project with a .apia/ subtree does NOT index .apia."""
+    proj = _make_project_with_apia(tmp_path / "proj")
+    kd = str(tmp_path / "knowledge")
+    ingest.ingest(str(proj), kd)
+
+    pmap = _read(kd, "project-map.md")
+    assert ".apia" not in pmap, "default run must not index .apia contents"
+    inv = _read(kd, "test-inventory.md")
+    assert "test_x.py" not in inv
+    assert os.path.join(".apia", "scripts", "tests", "test_x.py") not in inv
+    # The project's own test IS indexed (sanity: the walk still works).
+    assert "test_mod.py" in inv
+
+
+def test_include_apia_indexes_apia(tmp_path):
+    """ingest(..., include_apia=True) indexes .apia scripts/tests."""
+    proj = _make_project_with_apia(tmp_path / "proj")
+    kd = str(tmp_path / "knowledge")
+    ingest.ingest(str(proj), kd, include_apia=True)
+
+    pmap = _read(kd, "project-map.md")
+    assert ".apia" in pmap, "--include-apia must index .apia into the project map"
+    assert "scan.py" in pmap
+    inv = _read(kd, "test-inventory.md")
+    assert "test_x.py" in inv
+    assert "test_x" in inv  # the test function is discovered
+
+
+def test_is_ignored_apia_default_and_override():
+    """Direct unit assertion of the overridable .apia exclusion."""
+    assert ingest.is_ignored(os.path.join("x", ".apia"), ".apia", []) is True
+    assert ingest.is_ignored(
+        ".apia", ".apia", [], ignores=ingest.DEFAULT_IGNORES - {".apia"}) is False
+
+
 # --- Phase-6a LOCAL plugin wiring (additive) ---------------------------------
 
 def test_detect_stacks_surfaces_plugin_stack(tmp_path):

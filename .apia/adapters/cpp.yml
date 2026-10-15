@@ -204,6 +204,14 @@ scanners:
     - tool: clang-tidy
       command: "clang-tidy -p build src/smelly.cpp"
       format: clang_tidy
+      # ADVISORY coverage: clang-tidy is best-effort because it needs a compile
+      # database (-p build) the sample may lack, so its absence must NOT flip
+      # the coverage gate to INCOMPLETE. Every scanner is REQUIRED by default
+      # (declared == counts toward coverage) unless it opts out with
+      # `required: false` here. cppcheck above stays required. A repo can still
+      # force clang-tidy to be required via review.required_scanners in
+      # config.yml.
+      required: false
 
 # ---------------------------------------------------------------------------
 # OPTIONAL Layer-1 eval-data sections. These ground the self-correction loop in

@@ -154,6 +154,16 @@ review:
     fail_on_severity: high
     max_findings:
       security: 0
+  # required_scanners: COVERAGE policy for the tri-state gate (PASSED / FAILED /
+  # INCOMPLETE). A scanner declared in a complete adapter is REQUIRED by default
+  # (declared == required unless the scanner_def sets `required: false`), so a
+  # fully-declared adapter whose tools all vanish at runtime reports INCOMPLETE
+  # (non-zero exit), never a silent clean PASS. This OPTIONAL global override is
+  # a list of scanner tool names that must run regardless of the per-scanner
+  # flag -- it lets a repo TIGHTEN policy (e.g. force an advisory scanner such as
+  # clang-tidy to count) without editing adapters. Empty = use the per-scanner
+  # flags alone.
+  required_scanners: []
 
 # generate: Phase-3 greenfield PROJECT GENERATION policy. APIA generates a
 # working, tested, runnable Python OR C++ project from an APPROVED spec using a
