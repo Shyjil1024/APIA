@@ -3,7 +3,7 @@
 Passing tests for the lint-clean gate_pass_clean (S2) fixture package.
 """
 
-from cleanmath.arithmetic import add, subtract, multiply, negate
+from cleanmath.arithmetic import add, multiply, negate, subtract
 
 
 def test_add():

@@ -4,7 +4,7 @@ description: >
   surface: B602 (subprocess shell=True) and B105 (hardcoded password).
 engine: scan
 metric: defect_detection
-repo: ../../../samples/pyapp
+repo: ../../../../samples/pyapp
 adapter: python
 options: {}
 expected:

@@ -4,7 +4,7 @@ description: >
   REQUIRED scanner cppcheck is absent in the reference environment.
 engine: scan
 metric: gate_correctness
-repo: ../../../samples/cppapp
+repo: ../../../../samples/cppapp
 adapter: cpp
 options: {}
 expected:

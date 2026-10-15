@@ -199,15 +199,13 @@ def load_manifest(path):
 def resolve_repo(manifest):
     """Resolve the manifest ``repo`` to an existing tree (abs path), fail-loud.
 
-    The documented contract (design §4.3) is scenario-dir-relative, and the
-    scenario-local fixture repos (``fixture`` / ``fixture/cleanpy``) resolve that
-    way directly. The samples-reuse manifests encode an upward relative path
-    (e.g. ``../../../samples/pyapp``) that NAMES a repo-root ``samples/`` tree
-    (design §2.3); FEAT-001 delegated the exact resolution to the runner
-    ("relative to the repo root / scenario dir as it sees fit"). So: resolve
-    scenario-dir-relative first, and when that does not exist, anchor the path's
-    non-``..`` tail at the repo root (the intended ``samples/`` tree). A path
-    that resolves nowhere is a fail-loud manifest error.
+    The documented contract (design §4.3) is scenario-dir-relative: the fixture
+    repos (``fixture`` / ``fixture/cleanpy``) and the samples-reuse repos
+    (``../../../../samples/<tree>``) all resolve directly that way. As a
+    defensive fallback (e.g. a manifest that encodes too few ``..`` segments),
+    when the scenario-dir-relative path does not exist the path's non-``..`` tail
+    is re-anchored at the repo root. A path that resolves nowhere is a fail-loud
+    manifest error.
     """
     rel = manifest["repo"]
     local = os.path.abspath(os.path.join(manifest["_dir"], rel))

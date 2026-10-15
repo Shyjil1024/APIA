@@ -4,7 +4,7 @@ description: >
   high-severity bandit finding (B602) and the pip-audit CVE.
 engine: scan
 metric: gate_correctness
-repo: ../../../samples/pyapp
+repo: ../../../../samples/pyapp
 adapter: python
 options: {}
 expected:

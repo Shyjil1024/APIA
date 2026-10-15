@@ -1,0 +1,9 @@
+# APIA-EVAL FIXTURE — not product code.
+# Deliberately EMPTY requirements file for the gate_pass_clean (S2) fixture.
+# The python adapter's pip-audit scanner runs `python -m pip_audit -r
+# requirements-vuln.txt`; it is a REQUIRED scanner, so for the gate to honestly
+# return PASSED pip-audit must actually RUN and find nothing. A missing file
+# makes pip-audit error out (gate INCOMPLETE), so this file exists and pins NO
+# dependencies — pip-audit audits an empty set and reports zero advisories,
+# which is the only honest clean result (contrast samples/pyapp's
+# requirements-vuln.txt, which pins a known-vulnerable jinja2 to fail the gate).

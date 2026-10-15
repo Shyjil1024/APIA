@@ -5,7 +5,7 @@ description: >
   while the untouched CSV still matches.
 engine: evaldata
 metric: verification_correctness
-repo: ../../../samples/pyapp
+repo: ../../../../samples/pyapp
 adapter: python
 options:
   producer: python -m calc.report out/report.json out/table.csv
