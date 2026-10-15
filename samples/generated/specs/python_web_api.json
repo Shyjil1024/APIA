@@ -1,1 +1,1 @@
-{"name": "todo_api", "stack": "python", "summary": "a Flask web API with /health and /items endpoints"}
+{"name": "todo_api", "stack": "python", "summary": "a dependency-free web-API skeleton with a health() handler and an in-memory /items resource"}
