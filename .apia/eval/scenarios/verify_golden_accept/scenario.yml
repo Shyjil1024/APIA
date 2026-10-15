@@ -1,0 +1,18 @@
+id: verify_golden_accept
+description: >
+  Known-good verification: the produced out/report.json and out/table.csv match
+  pyapp's committed goldens under their declared compare modes.
+engine: evaldata
+metric: verification_correctness
+repo: ../../../samples/pyapp
+adapter: python
+options:
+  producer: python -m calc.report out/report.json out/table.csv
+expected:
+  golden_all_match: true
+tool_requirements: []
+notes: >
+  The python adapter declares characterization.capture_command: null and
+  mine_golden runs no producer, so the producer command is declared here in
+  options.producer and run shell-free in a fresh temp copy before mining
+  (design §2.3 S5).

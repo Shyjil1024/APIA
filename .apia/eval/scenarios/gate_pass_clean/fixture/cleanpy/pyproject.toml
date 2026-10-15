@@ -1,0 +1,17 @@
+# APIA-EVAL FIXTURE — not product code.
+# Lint-clean stand-in package for the gate_pass_clean (S2) scenario: engineered
+# to produce ZERO findings from ruff/flake8/bandit/radon so the tri-state gate
+# can only honestly return PASSED when every required Python scanner has run.
+[project]
+name = "cleanpy"
+version = "0.1.0"
+description = "APIA-eval fixture: a lint-clean package with no detectable smells."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
