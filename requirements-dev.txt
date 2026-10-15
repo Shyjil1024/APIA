@@ -22,3 +22,8 @@ pip-audit>=2.7,<3
 ruff>=0.5,<1
 flake8>=7,<8
 radon>=6,<7
+
+# Optional: more precise token counting for apia-tokenbench (.apia/scripts/tokenbench.py).
+# The benchmark degrades gracefully to a documented bytes/4 heuristic when this is
+# absent (it records which tokenizer it used). Not required for the test suite to pass.
+tiktoken>=0.7,<1   # OPTIONAL — apia-tokenbench only
