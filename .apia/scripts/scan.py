@@ -636,8 +636,22 @@ def run_scanner(repo, category, scanner_def):
     fabricated finding -- consistent with the doctor philosophy.
 
     ``meta`` is a per-scanner record: {tool, format, command, category,
-    returncode, tool_unavailable, output_tail}. ``category`` here is the
+    returncode, tool_unavailable, status, output_tail}. ``category`` here is the
     scanner_def's declared category; cppcheck may override per-finding.
+
+    EXECUTION STATUS (``meta["status"]``) distinguishes three outcomes so the
+    gate can tell "ran clean" apart from "did not run" and from "errored":
+      * ``"completed"`` -- the tool spawned and its output parsed (zero or more
+        findings).
+      * ``"failed"``    -- the tool was PRESENT and spawned but produced ZERO
+        findings AND exited non-zero. This is the honest "tool errored" signal.
+        We deliberately do NOT gate on return code alone: lint/security tools
+        (ruff/flake8/bandit) conventionally exit non-zero merely when they FIND
+        issues, so a run that produced findings is ``completed`` regardless of
+        exit code; only a zero-finding non-zero exit is treated as a failure.
+      * ``"unavailable"`` -- the tool is not present, the format has no
+        normalizer, or the spawn raised. ``tool_unavailable`` is kept True iff
+        status is ``"unavailable"`` so existing callers are unaffected.
     """
     tool = scanner_def.get("tool", "?")
     fmt = scanner_def.get("format")
@@ -649,15 +663,18 @@ def run_scanner(repo, category, scanner_def):
         "category": category,
         "returncode": None,
         "tool_unavailable": False,
+        "status": "completed",
         "output_tail": "",
     }
     parser = _parser_for(fmt)
     if parser is None:
         meta["tool_unavailable"] = True
+        meta["status"] = "unavailable"
         meta["error"] = "no normalizer for format {!r}".format(fmt)
         return [], meta
     if not _tool_present(scanner_def):
         meta["tool_unavailable"] = True
+        meta["status"] = "unavailable"
         meta["error"] = "tool {!r} not reachable".format(tool)
         return [], meta
     argv = _split_command(command)
@@ -666,6 +683,7 @@ def run_scanner(repo, category, scanner_def):
     except (OSError, ValueError) as exc:
         # Defensive: a race between the presence check and spawn, or a bad argv.
         meta["tool_unavailable"] = True
+        meta["status"] = "unavailable"
         meta["error"] = "failed to run {!r}: {}".format(tool, exc)
         return [], meta
     meta["returncode"] = returncode
@@ -677,6 +695,14 @@ def run_scanner(repo, category, scanner_def):
     # the declared category from the adapter.
     parser_category = None if fmt == "cppcheck" else category
     findings = parser(stdout, stderr, repo, parser_category)
+    # A present tool that produced NO findings but exited non-zero errored
+    # rather than ran clean (zero-finding + non-zero exit = failed). A tool that
+    # produced findings is `completed` regardless of exit code, because
+    # lint/security tools exit non-zero merely when they find issues.
+    if not findings and returncode not in (0, None):
+        meta["status"] = "failed"
+    else:
+        meta["status"] = "completed"
     return findings, meta
 
 
@@ -970,6 +996,31 @@ def resolve_thresholds(review_config, options=None):
     return thresholds
 
 
+def resolve_required_scanners(adapter, review_config=None):
+    """Return the set of REQUIRED scanner tool names for an adapter.
+
+    Coverage policy (defeats the silent-pass trap): a scanner declared in a
+    COMPLETE adapter is REQUIRED by default -- it counts toward coverage so a
+    fully-declared adapter whose tools all vanish at runtime does NOT read as a
+    clean pass. A scanner opts OUT by setting ``required: false`` in its
+    scanner_def (ADVISORY -- inherently best-effort tools such as the C++
+    clang-tidy entry, which needs a compile database the sample may lack).
+
+    A repo may TIGHTEN policy via ``review.required_scanners`` in config.yml: a
+    list of tool names that are required regardless of the per-scanner flag, so
+    an advisory scanner named there is pulled back into the required set.
+    """
+    required = set()
+    global_required = set((review_config or {}).get("required_scanners") or [])
+    for _cat, scanner_def in _iter_scanner_defs(adapter, "all"):
+        tool = scanner_def.get("tool")
+        if not tool:
+            continue
+        if scanner_def.get("required", True) or tool in global_required:
+            required.add(tool)
+    return required
+
+
 def _sort_findings(findings):
     """Sort findings by severity (most severe first) then category then file."""
     return sorted(
@@ -1049,6 +1100,34 @@ def scan(repo, adapter, options=None):
     review_config = load_review_config(repo_path)
     thresholds = resolve_thresholds(review_config, options)
     gate = apply_thresholds(all_findings, thresholds)
+
+    # Tri-state verdict (COVERAGE-AWARE gate). apply_thresholds decides pass/fail
+    # from the FINDINGS alone; it cannot tell "ran clean" apart from "no scanner
+    # ran at all". Layer that distinction HERE (never inside the shared
+    # apply_thresholds, whose (findings, thresholds) signature other callers --
+    # verify.py / evalloop / scaffold -- depend on):
+    #   * FAILED on findings WINS over INCOMPLETE: if the findings already breach
+    #     thresholds, report FAILED -- the review found real problems.
+    #   * else if any REQUIRED scanner is unavailable/failed -> INCOMPLETE: the
+    #     gate could NOT fully review, so it must NOT read as a clean PASS.
+    #   * else PASSED.
+    # Advisory (required: false) scanners that did not run stay advisory: they
+    # never flip the verdict, but remain in `unavailable_tools` and the report.
+    required_scanners = resolve_required_scanners(adapter, review_config)
+    incomplete_reason = []
+    for meta in scanner_metas:
+        if meta.get("tool") in required_scanners and \
+                meta.get("status") in ("unavailable", "failed"):
+            incomplete_reason.append("{} ({})".format(meta.get("tool"), meta.get("status")))
+    if not gate["passed"]:
+        status = "FAILED"
+    elif incomplete_reason:
+        status = "INCOMPLETE"
+    else:
+        status = "PASSED"
+    gate["status"] = status
+    gate["incomplete_reason"] = incomplete_reason
+    gate["passed"] = (status == "PASSED")
 
     # NOTE (Phase-6a): the `tools` block reflects the ADAPTER-DECLARED scanners
     # only -- it is the stable, doctor-style presence advisory for the adapter
@@ -1133,8 +1212,12 @@ def format_human(report):
             (f.get("message") or "").splitlines()[0] if f.get("message") else "",
         ))
     gate = report["gate"]
-    if gate["passed"]:
+    status = gate.get("status", "PASSED" if gate["passed"] else "FAILED")
+    if status == "PASSED":
         lines.append("  => GATE PASSED")
+    elif status == "INCOMPLETE":
+        lines.append("  => GATE INCOMPLETE: required scanner(s) did not run: {}".format(
+            "; ".join(gate.get("incomplete_reason") or []) or "unknown"))
     else:
         lines.append("  => GATE FAILED: {}".format("; ".join(gate["reasons"]) or "threshold breached"))
     return "\n".join(lines)
@@ -1270,8 +1353,16 @@ def main(argv=None):
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
 
-    # Exit code reflects the gate decision (0 = gate passed).
-    return 0 if report["gate"]["passed"] else 1
+    # Exit code reflects the TRI-STATE gate decision: 0 = PASSED,
+    # 2 = INCOMPLETE (a required scanner did not run -- could not fully review),
+    # 1 = FAILED (findings breached thresholds). Both non-PASSED states are
+    # non-zero so a coverage-blind run can never silently exit 0.
+    status = report["gate"].get("status", "PASSED" if report["gate"]["passed"] else "FAILED")
+    if status == "PASSED":
+        return 0
+    if status == "INCOMPLETE":
+        return 2
+    return 1
 
 
 if __name__ == "__main__":

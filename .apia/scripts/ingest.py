@@ -141,7 +141,13 @@ DEFAULT_IGNORES = {
     ".vs",
     "build",
     "dist",
-    ".apia",  # never ingest the knowledge base itself
+    # Excluded BY DEFAULT so an ordinary ingest never indexes the knowledge
+    # base / APIA package itself. This default is OVERRIDABLE for self-ingest:
+    # pass --include-apia on the CLI (or include_apia=True to ingest/walk_repo)
+    # to remove .apia from the effective ignore set for that run only, so APIA
+    # can index its OWN scripts/tests/adapters. The default stays excluded
+    # because a normal project ingest should not surface APIA's own machinery.
+    ".apia",
     # Vendored / third-party dependency trees. These hold code the project does
     # not own (e.g. a C++ repo that checks Eigen / nlohmann / GoogleTest into
     # cpp/third-parties/), so walking them inflates the file/stack counts and
@@ -199,9 +205,15 @@ def load_gitignore_patterns(repo_path):
     return patterns
 
 
-def is_ignored(rel_path, name, gitignore_patterns):
-    """Return True if a path should be skipped (default ignores + .gitignore)."""
-    if name in DEFAULT_IGNORES:
+def is_ignored(rel_path, name, gitignore_patterns, ignores=DEFAULT_IGNORES):
+    """Return True if a path should be skipped (default ignores + .gitignore).
+
+    ``ignores`` is the effective default-ignore set to consult; it defaults to
+    the module-level ``DEFAULT_IGNORES`` so existing callers are unchanged. The
+    walk passes a per-run set here (e.g. with ``.apia`` removed for self-ingest)
+    rather than mutating the shared global.
+    """
+    if name in ignores:
         return True
     for pat in gitignore_patterns:
         if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel_path, pat):
@@ -215,12 +227,19 @@ def is_ignored(rel_path, name, gitignore_patterns):
 # ---------------------------------------------------------------------------
 # Repo walk
 # ---------------------------------------------------------------------------
-def walk_repo(repo_path):
+def walk_repo(repo_path, include_apia=False):
     """Walk the repository, returning a sorted list of repo-relative file paths.
 
     Respects DEFAULT_IGNORES and a minimal .gitignore. Pure filesystem walk; no
     network access.
+
+    When ``include_apia`` is True the ``.apia`` directory is removed from the
+    effective ignore set for THIS run only (opt-in self-ingest), so APIA can
+    index its own scripts/tests/adapters. The default (False) keeps ``.apia``
+    excluded. The module-level DEFAULT_IGNORES is never mutated -- a fresh
+    effective set is built per call so the choice cannot leak across calls/tests.
     """
+    effective_ignores = (DEFAULT_IGNORES - {".apia"}) if include_apia else DEFAULT_IGNORES
     gitignore_patterns = load_gitignore_patterns(repo_path)
     files = []
     for root, dirs, filenames in os.walk(repo_path):
@@ -231,12 +250,12 @@ def walk_repo(repo_path):
         kept = []
         for d in dirs:
             rel = os.path.join(rel_root, d) if rel_root else d
-            if not is_ignored(rel, d, gitignore_patterns):
+            if not is_ignored(rel, d, gitignore_patterns, effective_ignores):
                 kept.append(d)
         dirs[:] = sorted(kept)
         for fn in sorted(filenames):
             rel = os.path.join(rel_root, fn) if rel_root else fn
-            if is_ignored(rel, fn, gitignore_patterns):
+            if is_ignored(rel, fn, gitignore_patterns, effective_ignores):
                 continue
             files.append(rel)
     return sorted(files)
@@ -1445,16 +1464,20 @@ def changed_paths(old_index, new_index):
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
-def ingest(repo_path, knowledge_dir, full=False):
+def ingest(repo_path, knowledge_dir, full=False, include_apia=False):
     """Run ingestion and write artifacts. Returns a result summary dict.
 
     This is the single entrypoint used by both the CLI and the tests.
+
+    ``include_apia`` (opt-in, default False) threads through to walk_repo: when
+    True the ``.apia`` directory is included in the walk so APIA can self-ingest
+    its own scripts/tests/adapters. Default keeps ``.apia`` excluded.
     """
     repo_path = os.path.abspath(repo_path)
     repo_name = os.path.basename(repo_path.rstrip(os.sep))
     os.makedirs(knowledge_dir, exist_ok=True)
 
-    files = walk_repo(repo_path)
+    files = walk_repo(repo_path, include_apia=include_apia)
     new_sources = build_source_index(repo_path, files)
 
     old_index = None if full else load_index(knowledge_dir)
@@ -1563,6 +1586,13 @@ def main(argv=None):
         help="Run the offline toolchain preflight (shutil.which + local --version) and exit.",
     )
     parser.add_argument(
+        "--include-apia",
+        dest="include_apia",
+        action="store_true",
+        help="Include the .apia/ package itself in the walk so APIA can ingest "
+             "its own scripts/tests/adapters (default: excluded).",
+    )
+    parser.add_argument(
         "--knowledge-dir",
         default=None,
         help="Where to write knowledge artifacts (default: .apia/knowledge/).",
@@ -1585,7 +1615,8 @@ def main(argv=None):
         parser.error("repo_path is not a directory: {}".format(args.repo_path))
 
     knowledge_dir = args.knowledge_dir or default_knowledge_dir()
-    result = ingest(args.repo_path, knowledge_dir, full=args.full)
+    result = ingest(args.repo_path, knowledge_dir, full=args.full,
+                    include_apia=args.include_apia)
 
     if result["reprocessed"]:
         print("Ingested '{}': {} stack(s) {}, {} test function(s).".format(

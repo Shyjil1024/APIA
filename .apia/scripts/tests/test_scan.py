@@ -383,9 +383,215 @@ def test_scan_with_missing_tool_still_returns_valid_report(tmp_path):
     report = scan.scan(str(tmp_path), adapter, {})
     assert report["findings"] == []
     assert "nope-tool" in report["unavailable_tools"]
-    assert report["gate"]["passed"] is True  # nothing to fail on
+    # COVERAGE-AWARE gate: a missing REQUIRED scanner (declared == required by
+    # default) is NOT a silent clean PASS -- the gate reports INCOMPLETE because
+    # the review could not actually run. (Pre-coverage-gate this asserted PASSED;
+    # that was exactly the coverage-blind bug this change fixes.)
+    assert report["gate"]["passed"] is False
+    assert report["gate"]["status"] == "INCOMPLETE"
+    assert "nope-tool" in " ".join(report["gate"]["incomplete_reason"])
     # Report is JSON-serializable.
     json.dumps(report)
+
+
+# --- coverage-aware tri-state gate (PASSED / FAILED / INCOMPLETE) ------------
+#
+# The gate must distinguish a genuinely clean review (all required scanners ran,
+# nothing found) from a COVERAGE-BLIND run (no scanner ran, so findings == []).
+# These tests monkeypatch the tool-presence check / the _run chokepoint to
+# simulate missing / failing scanners and assert the tri-state verdict + exit
+# codes. Inline-dict adapters are used so these do not depend on PyYAML.
+
+def _present_only(present_tools):
+    """Build a _tool_present stand-in that is True only for the named tools.
+
+    Matches on the scanner_def's logical tool name (scan._scanner_exe) OR its
+    declared ``tool`` key so an inline adapter is easy to steer.
+    """
+    present = set(present_tools)
+
+    def _fake(scanner_def):
+        return (scanner_def.get("tool") in present) or (scan._scanner_exe(scanner_def) in present)
+    return _fake
+
+
+def _two_required_adapter():
+    # Two REQUIRED Python scanners (no `required` flag == required by default).
+    return {
+        "name": "faux-req",
+        "scanners": {
+            "quality": [
+                {"tool": "ruff", "command": "python -m ruff check .", "format": "ruff"},
+                {"tool": "flake8", "command": "python -m flake8 .", "format": "flake8"},
+            ],
+        },
+    }
+
+
+def test_gate_all_required_scanners_missing_is_incomplete(tmp_path, monkeypatch):
+    """All required scanners missing -> INCOMPLETE, not PASSED, exit non-zero."""
+    adapter = _two_required_adapter()
+    monkeypatch.setattr(scan, "_tool_present", _present_only(set()))
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["findings"] == []
+    assert report["gate"]["status"] == "INCOMPLETE"
+    assert report["gate"]["passed"] is False
+    # Both required scanners named in the reason.
+    reason = " ".join(report["gate"]["incomplete_reason"])
+    assert "ruff" in reason and "flake8" in reason
+    json.dumps(report)
+
+
+def test_gate_all_required_missing_main_exit_code(tmp_path, monkeypatch):
+    """main() returns 2 (non-zero) for a coverage-blind INCOMPLETE run."""
+    monkeypatch.setattr(scan, "_tool_present", _present_only(set()))
+    # Point --adapter at the real python.yml but with every scanner absent.
+    rc = scan.main([str(tmp_path), "--adapter", PY_ADAPTER])
+    assert rc == 2
+
+
+def test_gate_one_required_missing_is_incomplete(tmp_path, monkeypatch):
+    """One required missing, others present -> still INCOMPLETE."""
+    adapter = _two_required_adapter()
+    # ruff present, flake8 missing. Make the present tool run clean (no findings).
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"ruff"}))
+    monkeypatch.setattr(scan, "_run", lambda argv, cwd: (0, "[]", ""))
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["gate"]["status"] == "INCOMPLETE"
+    reason = " ".join(report["gate"]["incomplete_reason"])
+    assert "flake8" in reason
+    assert "ruff" not in reason  # ruff ran clean, so it is not a coverage gap
+
+
+def test_gate_present_scanner_that_errors_is_failed_status(tmp_path, monkeypatch):
+    """A present scanner that errors (zero findings + non-zero exit) is 'failed'
+    and the verdict is NOT a plain PASS."""
+    adapter = _two_required_adapter()
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"ruff", "flake8"}))
+    # ruff errors: non-zero exit, empty stdout -> zero findings -> failed.
+    # flake8 runs clean (no findings, exit 0 -> completed).
+    def _fake_run(argv, cwd):
+        if "ruff" in argv:
+            return 2, "", "ruff: internal error"
+        return 0, "", ""
+    monkeypatch.setattr(scan, "_run", _fake_run)
+    report = scan.scan(str(tmp_path), adapter, {})
+    ruff_meta = next(m for m in report["scanners"] if m["tool"] == "ruff")
+    assert ruff_meta["status"] == "failed"
+    assert report["gate"]["status"] == "INCOMPLETE"  # no findings, but ruff errored
+    assert report["gate"]["passed"] is False
+
+
+def test_gate_all_required_present_zero_findings_passes(tmp_path, monkeypatch):
+    """All required present + zero findings -> PASSED, main exit 0."""
+    adapter = _two_required_adapter()
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"ruff", "flake8"}))
+    monkeypatch.setattr(scan, "_run", lambda argv, cwd: (0, "[]", ""))
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["gate"]["status"] == "PASSED"
+    assert report["gate"]["passed"] is True
+    assert report["gate"]["incomplete_reason"] == []
+
+
+def test_gate_findings_exceed_thresholds_is_failed(tmp_path, monkeypatch):
+    """Findings exceed thresholds with all scanners present -> FAILED (exit 1).
+
+    Inject a high-severity bandit finding via a monkeypatched _run returning the
+    module's BANDIT_JSON fixture; default thresholds (fail_on high) fail."""
+    adapter = {
+        "name": "faux-sec",
+        "scanners": {
+            "security": [
+                {"tool": "bandit", "command": "python -m bandit -r . -f json",
+                 "format": "bandit"},
+            ],
+        },
+    }
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"bandit"}))
+    monkeypatch.setattr(scan, "_run", lambda argv, cwd: (1, BANDIT_JSON, ""))
+    # Thresholds come from config.yml (fail_on high); the fixture carries a HIGH.
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["gate"]["status"] == "FAILED"
+    assert report["gate"]["passed"] is False
+    # bandit produced findings, so despite the non-zero exit it is 'completed'.
+    bandit_meta = next(m for m in report["scanners"] if m["tool"] == "bandit")
+    assert bandit_meta["status"] == "completed"
+
+
+def test_gate_failed_findings_win_over_incomplete(tmp_path, monkeypatch):
+    """FAILED-on-findings takes precedence over INCOMPLETE: a real breach with a
+    missing second required scanner still reports FAILED (problems found)."""
+    adapter = {
+        "name": "faux-mix",
+        "scanners": {
+            "security": [
+                {"tool": "bandit", "command": "python -m bandit -r . -f json",
+                 "format": "bandit"},
+            ],
+            "quality": [
+                {"tool": "flake8", "command": "python -m flake8 .", "format": "flake8"},
+            ],
+        },
+    }
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"bandit"}))  # flake8 missing
+    monkeypatch.setattr(scan, "_run", lambda argv, cwd: (1, BANDIT_JSON, ""))
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["gate"]["status"] == "FAILED"
+
+
+def test_gate_advisory_scanner_missing_still_passes(tmp_path, monkeypatch):
+    """An ADVISORY (required: false) scanner missing -> still PASSED.
+
+    Adapter has one required scanner present (clean) and one advisory scanner
+    absent; the advisory gap must not flip the verdict."""
+    adapter = {
+        "name": "faux-adv",
+        "scanners": {
+            "quality": [
+                {"tool": "ruff", "command": "python -m ruff check .", "format": "ruff"},
+                {"tool": "clang-tidy", "command": "clang-tidy src", "format": "clang_tidy",
+                 "required": False},
+            ],
+        },
+    }
+    monkeypatch.setattr(scan, "_tool_present", _present_only({"ruff"}))  # clang-tidy absent
+    monkeypatch.setattr(scan, "_run", lambda argv, cwd: (0, "[]", ""))
+    report = scan.scan(str(tmp_path), adapter, {})
+    assert report["gate"]["status"] == "PASSED"
+    assert report["gate"]["passed"] is True
+    # The advisory tool is still conspicuously reported as unavailable.
+    assert "clang-tidy" in report["unavailable_tools"]
+
+
+def test_resolve_required_scanners_for_shipped_adapters():
+    """resolve_required_scanners honors the per-scanner `required` flag on the
+    shipped python.yml / cpp.yml adapters (cppcheck required, clang-tidy not)."""
+    pytest.importorskip("yaml")
+    py = scan.load_adapter(PY_ADAPTER)
+    py_required = scan.resolve_required_scanners(py)
+    assert {"bandit", "pip-audit", "ruff", "flake8", "radon"} <= py_required
+
+    cpp = scan.load_adapter(CPP_ADAPTER)
+    cpp_required = scan.resolve_required_scanners(cpp)
+    assert "cppcheck" in cpp_required
+    assert "clang-tidy" not in cpp_required  # declared required: false (advisory)
+
+
+def test_resolve_required_scanners_global_override():
+    """review.required_scanners pulls an advisory scanner back into required."""
+    adapter = {
+        "name": "faux-override",
+        "scanners": {
+            "quality": [
+                {"tool": "clang-tidy", "command": "clang-tidy src",
+                 "format": "clang_tidy", "required": False},
+            ],
+        },
+    }
+    assert scan.resolve_required_scanners(adapter) == set()
+    forced = scan.resolve_required_scanners(
+        adapter, {"required_scanners": ["clang-tidy"]})
+    assert forced == {"clang-tidy"}
 
 
 # --- stub adapter refusal ----------------------------------------------------
@@ -652,7 +858,7 @@ def test_json_only_emits_parseable_json(capsys):
     out = capsys.readouterr().out
     # Non-zero exit reflects the gate decision (pyapp has findings); not asserted
     # here. The output must be valid JSON with no leading human summary.
-    assert rc in (0, 1)
+    assert rc in (0, 1, 2)
     assert not out.lstrip().startswith("APIA scan ::")
     report = json.loads(out)
     assert "findings" in report
